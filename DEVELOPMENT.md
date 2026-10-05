@@ -47,6 +47,19 @@ antsibull-docs starts worker processes whose socket path includes the checkout.
 The default sessions verify the foundata lint rules and validate both changelog
 fragments and the generated `changelogs/changelog.yaml` separately.
 
+## Consumers of the unpublished collection
+
+A product collection that depends on `foundata.utils` before publication
+serves it from a tree on `ANSIBLE_COLLECTIONS_PATH`: build this collection
+with `ansible-galaxy collection build`, install the archive into a run-owned
+path with `ansible-galaxy collection install -p <path>`, and export
+`ANSIBLE_COLLECTIONS_PATH=<path>` for the consumer's checks. antsibull-nox
+resolves collections through `ansible-galaxy collection list`, so every
+session, the `ansible-test` lanes included, sees the copy. Do not put local
+paths into `antsibull-nox.toml`. The Galaxy importer in a consumer's
+`build-import-check` prints a non-fatal error for the documentation fragment
+`foundata.utils.http_client` until this collection is published.
+
 ## Unit test iteration
 
 Unit tests run directly for quick iteration with a scratch `ansible_collections`
@@ -55,3 +68,5 @@ tree that links this checkout as `foundata/utils`:
 ```sh
 PYTHONPATH=/path/to/scratch/collections python -m pytest tests/unit -s --import-mode=importlib
 ```
+
+The `-s` flag prints the measured times of the loopback transport cases.

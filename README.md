@@ -17,6 +17,10 @@ newer where a module runs.
 - [Included content](#content)
   - [`errors`](#errors)
   - [`deadline`](#deadline)
+  - [`http_client`](#http-client)
+  - [Documentation fragment `foundata.utils.http_client`](#fragment-http)
+- [Limits of the elapsed-time budget](#budget-limits)
+- [Using the helpers in a product module](#usage)
 - [Dependencies](#dependencies)
 - [Development and testing](#development)
 - [Licensing, copyright](#licensing-copyright)
@@ -90,7 +94,247 @@ What it guarantees:
 What it does not do:
 
 - It does not interrupt anything. A blocking step that ignores the budget
-  runs to its own end.
+  runs to its own end; see [the limits](#budget-limits).
+
+
+### `http_client`<a id="http-client"></a>
+
+A bounded byte transport over `ansible.module_utils.urls.open_url`.
+
+`HttpClient(base_url, user_agent=..., validate_certs=True, ca_path=None,
+use_proxy=True, timeout=30, max_body_bytes=4 MiB)` is configured once per
+endpoint. `request(method, path, deadline=..., headers=..., body=None)`
+returns an `HttpResponse` with `status`, lower-cased `headers` and the raw
+`body` bytes.
+
+What it guarantees:
+
+- Bytes in, bytes out. The product encodes JSON or forms, sets its
+  authentication and product headers, decodes the body and checks the HTTP
+  and the application status. The transport does no retry and no
+  pagination.
+- The request stays within the endpoint: the path must be absolute, without
+  dot segments, a fragment, a backslash, whitespace or control characters,
+  and the resulting URL must keep the endpoint's origin and path prefix. A
+  base URL with credentials, a query or a fragment is refused.
+- Certificates are validated by default; `ca_path` adds a private authority
+  and must be a readable file. `validate_certs=False` is never chosen
+  automatically.
+- Redirects are not followed: a 3xx response is returned like any other, so
+  credentials never travel to another origin. `netrc` is not read. Only the
+  `identity` content encoding is requested and accepted; a compressed
+  response is refused. Products cannot set `Accept-Encoding`, `User-Agent`,
+  `Host`, `Content-Length`, `Transfer-Encoding` or `Connection`.
+- The socket inactivity timeout is the smaller of `timeout` and the
+  remaining deadline. The body is read with `read1`, with a budget check
+  before and after every read and a byte limit. A declared `Content-Length`
+  beyond the limit is refused before the first read; a body shorter than its
+  declared length is a protocol failure, not a truncated success.
+- Every response is closed, including an error status, a refused encoding,
+  an oversized body and a failed read.
+- An HTTP error status is a response, not an exception: its body is read
+  under the same bounds and returned, so a product parser can derive an
+  allowlisted diagnostic.
+- Failures become `ApiError` with the categories and codes in
+  `http_client.ERROR_CODES`: `argument` (`invalid_url`, `invalid_timeout`,
+  `invalid_ca_path`), `request` (`invalid_path`), `response`
+  (`body_too_large`, `content_encoding`, `invalid_utf8`, `invalid_json`),
+  `transport` (`connection_failed`,
+  `tls_validation`, `io_error`, `http_protocol`) and `timeout`
+  (`socket_timeout`, `deadline_exceeded`, both as `TransportTimeout`).
+  Every translation drops the original exception, so no URL, header or
+  server text enters an exception message.
+- `decode_json(body)` turns a UTF-8 JSON body into Python values and raises
+  `response` errors `invalid_utf8` and `invalid_json` without the body text.
+  An empty body is not a document: a product that answers a write without a
+  body checks `body` before it decodes. The shape of the decoded value is
+  the product's to validate.
+- Header values never enter a `repr`: `HttpResponse` prints its status only
+  and `HttpClient` its base URL only. The client stores no headers.
+- `http_argument_spec()` returns a fresh specification of the mechanical
+  options on every call; extending the copy affects no other module.
+
+What it does not do:
+
+- It does not check the application status, decode anything, authenticate
+  or paginate. Those are product semantics.
+- It does not keep connections open. Each request opens its own.
+- It does not make the budget a hard limit; see the next section.
+
+
+### Documentation fragment `foundata.utils.http_client`<a id="fragment-http"></a>
+
+Documents `url`, `validate_certs`, `ca_path`, `use_proxy`, `timeout` and
+`deadline`, matching `http_argument_spec()`. Credential options stay with
+the product, which may also override an option's description, for example
+to name an environment variable fallback. Each consumer validates its
+merged documentation against its real argument specification.
+
+
+
+## Limits of the elapsed-time budget<a id="budget-limits"></a>
+
+The deadline is cooperative. The transport checks it before it opens a
+connection and before and after each body read, and derives the socket
+timeout from it. Everything between two checks can run past the budget:
+
+|                      Situation                      |                                                What bounds it                                                | Measured in the unit tests |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| The server accepts and sends nothing                | The socket timeout, `min(timeout, remaining)`                                                                | 0.52 s with `timeout=0.5`; 0.52 s with `timeout=30` and a 0.5 s deadline |
+| The response header arrives one byte at a time      | Nothing. Every byte resets the inactivity timer, and the budget is first checked once the header is complete | 1.94 s for a 98-byte header at 20 ms per byte against a 0.5 s deadline |
+| The body arrives one byte at a time                 | The budget, checked after each `read1`                                                                       | 0.53 s against a 0.5 s deadline |
+| The body stalls after a few bytes                   | The socket timeout as set when the connection was opened                                                     | 0.32 s with a 0.3 s deadline and `timeout=0.6` |
+| DNS resolution                                      | Nothing in this transport. The resolver's own timeouts apply                                                 | Not measured               |
+| A slow proxy, chunk framing of a single large chunk | The socket timeout per underlying read                                                                       | Not measured               |
+
+The times come from `tests/unit/plugins/module_utils/test_http_client.py` on a
+loopback server; they are printed with `pytest -s`. A module that needs a
+hard limit needs the task-level `timeout`, which stops the controller
+waiting but does not stop the module process; an interrupted write then has
+an unknown outcome.
+
+
+
+## Using the helpers in a product module<a id="usage"></a>
+
+A product collection wraps the transport once: it sets authentication and
+content headers, translates the HTTP status into its own codes, decodes the
+body, and counts writes. The modules call that wrapper and never touch
+`HttpClient` directly.
+
+```python
+import json
+
+from ansible_collections.foundata.utils.plugins.module_utils import deadline as deadline_util
+from ansible_collections.foundata.utils.plugins.module_utils import http_client as http_util
+from ansible_collections.foundata.utils.plugins.module_utils.deadline import Deadline
+from ansible_collections.foundata.utils.plugins.module_utils.errors import (
+    ApiError,
+    ErrorSchema,
+    fail_from,
+    merge_error_codes,
+)
+from ansible_collections.foundata.utils.plugins.module_utils.http_client import (
+    HttpClient,
+    decode_json,
+)
+
+SCHEMA = ErrorSchema(
+    codes_by_category=merge_error_codes(
+        http_util.ERROR_CODES,
+        deadline_util.ERROR_CODES,
+        {
+            "auth": {"unauthenticated", "forbidden"},
+            "internal": {None},
+            "product": {"rejected", "unexpected_status", "not_found"},
+            "verification": {"not_persisted"},
+        },
+    ),
+    fallback=("internal", None),
+    field_validators={"resource": str},
+)
+
+
+class ProductError(ApiError):
+    """A failure the product client classified; never carries product text."""
+
+
+class Client:
+    """One authenticated endpoint for one module invocation."""
+
+    def __init__(self, params):
+        self._http = HttpClient(
+            params["url"],
+            user_agent="foundata.example/1.0",
+            validate_certs=params["validate_certs"],
+            ca_path=params["ca_path"],
+            use_proxy=params["use_proxy"],
+            timeout=params["timeout"],
+        )
+        self.deadline = Deadline(params["deadline"])
+        self._headers = {
+            "Authorization": f"Bearer {params['api_key']}",
+            "Accept": "application/json",
+        }
+        self.writes = 0
+
+    def call(self, method, path, body=None):
+        headers = dict(self._headers)
+        data = None
+        if body is not None:  # Content-Type only when a body travels
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        response = self._http.request(
+            method, path, deadline=self.deadline, headers=headers, body=data
+        )
+        if response.status in (401, 403) or 300 <= response.status < 400:
+            code = "forbidden" if response.status == 403 else "unauthenticated"
+            raise ProductError("Authentication failed", category="auth", code=code, status=response.status)
+        if response.status == 404:
+            raise ProductError("Not found", category="product", code="not_found", status=404)
+        if response.status >= 400:  # the product refused the request; its text stays unread
+            raise ProductError("Request rejected", category="product", code="rejected", status=response.status)
+        if response.status != 200:
+            raise ProductError("Unexpected status", category="product", code="unexpected_status", status=response.status)
+        return decode_json(response.body)
+
+    def write(self, path, body):
+        self.writes += 1  # one attempt per run; a lost answer is settled by reading back
+        return self.call("POST", path, body)
+
+
+spec = http_util.http_argument_spec()
+spec["api_key"] = {"type": "str", "required": True, "no_log": True}
+spec["name"] = {"type": "str", "required": True}
+module = AnsibleModule(argument_spec=spec, supports_check_mode=True)
+client = Client(module.params)
+try:
+    current = client.call("GET", f"/api/items/{module.params['name']}")
+    if current["enabled"]:
+        module.exit_json(changed=False, item=current, changed_fields=[], verified="observed")
+    if module.check_mode:
+        module.exit_json(changed=True, item={**current, "enabled": True}, changed_fields=["enabled"], verified="predicted")
+    client.write(f"/api/items/{module.params['name']}", {"enabled": True})
+    after = client.call("GET", f"/api/items/{module.params['name']}")  # read back, never trust the write's answer
+    if not after["enabled"]:
+        raise ProductError("Change did not persist", category="verification", code="not_persisted")
+    module.exit_json(changed=True, item=after, changed_fields=["enabled"], verified="observed")
+except ApiError as error:
+    fail_from(
+        module,
+        error,
+        schema=SCHEMA,
+        msg="Enabling the item failed",
+        changed=client.writes > 0,
+        outcome="unknown" if client.writes > 0 else "unchanged",
+        fields={"resource": module.params["name"]},
+    )
+```
+
+A failure after the write attempt serializes to this, and to nothing else:
+no product text, no URL, no traceback body even with
+`ANSIBLE_DISPLAY_TRACEBACK` enabled.
+
+```json
+{
+  "failed": true,
+  "msg": "Enabling the item failed",
+  "error_category": "product",
+  "error_code": "rejected",
+  "http_status": 409,
+  "changed": true,
+  "outcome": "unknown",
+  "resource": "web"
+}
+```
+
+The documentation of such a module extends the fragment:
+
+```yaml
+extends_documentation_fragment:
+  - foundata.utils.http_client
+```
+
 
 
 ## Dependencies<a id="dependencies"></a>
