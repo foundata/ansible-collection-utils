@@ -16,6 +16,7 @@ newer where a module runs.
 
 - [Included content](#content)
   - [`errors`](#errors)
+  - [`deadline`](#deadline)
 - [Dependencies](#dependencies)
 - [Development and testing](#development)
 - [Licensing, copyright](#licensing-copyright)
@@ -69,6 +70,27 @@ What it does not do:
   failure field names that do not appear in the module's success result
   with another type; a mapping on success and a list on failure under one
   key confuses every caller that reads both paths.
+
+
+### `deadline`<a id="deadline"></a>
+
+One monotonic elapsed-time budget per module operation.
+
+What it guarantees:
+
+- `Deadline(seconds)` starts a budget when created. `remaining()` returns
+  the seconds left and raises `TransportTimeout` with code
+  `deadline_exceeded` once the budget is exhausted, on every later call too.
+- A non-positive, non-finite or non-numeric budget raises `ApiError` with
+  category `argument` and code `invalid_deadline`, so a bad module option
+  fails like any other expected failure.
+- A transport never resets a deadline. The caller shares one deadline across
+  retries, polling, read-back and command execution.
+
+What it does not do:
+
+- It does not interrupt anything. A blocking step that ignores the budget
+  runs to its own end.
 
 
 ## Dependencies<a id="dependencies"></a>
