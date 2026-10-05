@@ -1,9 +1,39 @@
 # Ansible collection: `foundata.utils`
 
+This repository contains the `foundata.utils` Ansible Collection: shared
+transport and safety mechanics for foundata's product collections. It ships
+module utilities and a documentation fragment only. There are no modules,
+roles or playbooks; a product collection imports the utilities into its own
+modules.
+
+The collection depends on ansible-core alone and supports the same floors as
+its consumers: ansible-core 2.19 or newer on the controller, Python 3.9 or
+newer where a module runs.
+
+
+
 ## Table of contents<a id="toc"></a>
 
+- [Dependencies](#dependencies)
+- [Development and testing](#development)
 - [Licensing, copyright](#licensing-copyright)
 - [Author information](#author-information)
+
+
+
+## Dependencies<a id="dependencies"></a>
+
+None beyond ansible-core. See `dependencies` in [`galaxy.yml`](./galaxy.yml).
+
+
+
+## Development and testing<a id="development"></a>
+
+[`DEVELOPMENT.md`](./DEVELOPMENT.md) describes the checks. `antsibull-nox.toml`
+lists the sessions: `CI=true nox` for check-only lint, documentation, license,
+build and import, `nox -s ansible-test-sanity`, `nox -s ansible-test-units` and
+`nox -s ansible-test-integration` for the containerized `ansible-test` runs on
+every supported ansible-core version.
 
 
 
