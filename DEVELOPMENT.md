@@ -46,3 +46,12 @@ antsibull-docs starts worker processes whose socket path includes the checkout.
 
 The default sessions verify the foundata lint rules and validate both changelog
 fragments and the generated `changelogs/changelog.yaml` separately.
+
+## Unit test iteration
+
+Unit tests run directly for quick iteration with a scratch `ansible_collections`
+tree that links this checkout as `foundata/utils`:
+
+```sh
+PYTHONPATH=/path/to/scratch/collections python -m pytest tests/unit -s --import-mode=importlib
+```
