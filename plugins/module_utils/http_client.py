@@ -216,10 +216,9 @@ class HttpClient:
                 # same bounds so that a product parser can derive a diagnostic.
                 response = error
             raw_headers = getattr(response, "headers", None)
-            encoding = (
-                raw_headers.get("Content-Encoding") if raw_headers else None
-            ) or "identity"
-            if encoding.strip().lower() != "identity":
+            response_headers = _header_mapping(raw_headers)
+            encodings = response_headers.get("content-encoding", "identity").split(",")
+            if any(encoding.strip().lower() != "identity" for encoding in encodings):
                 raise ApiError(
                     "Unsupported response content encoding",
                     category="response",
@@ -228,7 +227,7 @@ class HttpClient:
             data = self._read_body(response, deadline, method, raw_headers)
             return HttpResponse(
                 status=int(response.code),
-                headers=_header_mapping(raw_headers),
+                headers=response_headers,
                 body=data,
             )
         except _TIMEOUT_TYPES:
@@ -312,9 +311,12 @@ class HttpClient:
         first read; a body shorter than its declared length is a protocol
         failure, because ``read1`` reports a closed connection as the end.
         """
+        if method == "HEAD" or response.code == 304:
+            deadline.remaining()
+            return b""
         if getattr(response, "fp", None) is None:
             return b""
-        declared = _declared_length(raw_headers) if method != "HEAD" else None
+        declared = _declared_length(raw_headers)
         if declared is not None and declared > self._max_body_bytes:
             raise ApiError(
                 "Response exceeds the size limit",
@@ -370,7 +372,7 @@ def decode_json(body: bytes) -> Any:
         ) from None
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise ApiError(
             "Response is not a JSON document", category="response", code="invalid_json"
         ) from None

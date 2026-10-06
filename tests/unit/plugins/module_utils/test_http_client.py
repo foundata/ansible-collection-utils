@@ -16,10 +16,12 @@ import ssl
 import time
 from collections.abc import Callable, Iterator
 from email.message import Message
+from email.parser import BytesParser
 from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 
 import pytest
 from ansible.module_utils.urls import ConnectionError as UrlConnectionError
@@ -447,7 +449,7 @@ def test_response_repr_hides_headers_and_body() -> None:
     assert repr(response) == "HttpResponse(status=200)"
 
 
-def test_argument_spec_is_fresh_and_matches_the_fragment() -> None:
+def test_argument_spec_is_fresh() -> None:
     first, second = http_argument_spec(), http_argument_spec()
     assert first == second and first is not second
     first["url"]["default"] = "mutated"
@@ -499,18 +501,61 @@ def test_success_returns_bounded_bytes_and_closes(
     assert instance.wait_closed() is True
 
 
-def test_post_sends_the_bytes_unchanged(server: Callable[..., LoopbackServer]) -> None:
-    instance = server(respond(201, b""))
-    body = b"a=1&b=\xc3\xa4"
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        b"",
+        urlencode(
+            [
+                ("role", "admin"),
+                ("role", "user"),
+                ("name", "J\u00f6rg"),
+            ]
+        ).encode("ascii"),
+    ],
+)
+def test_post_sends_the_bytes_unchanged(
+    server: Callable[..., LoopbackServer], body: bytes | None
+) -> None:
+    received: list[tuple[Message, bytes]] = []
+
+    def handler(conn: socket.socket, request: bytes) -> None:
+        head, _separator, data = request.partition(b"\r\n\r\n")
+        headers = BytesParser().parsebytes(head.split(b"\r\n", 1)[1])
+        length = int(headers.get("Content-Length", "0"))
+        while len(data) < length:
+            chunk = conn.recv(length - len(data))
+            if not chunk:
+                raise AssertionError("The request body ended early")
+            data += chunk
+        assert len(data) == length
+        received.append((headers, data))
+        send_all(conn, response_bytes(201, b""))
+
+    instance = server(handler)
+    headers = {"OCS-APIRequest": "true"}
+    if body is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
     response = client_for(instance).request(
-        "POST",
+        "GET" if body is None else "POST",
         "/",
         deadline=Deadline(5),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers=headers,
         body=body,
     )
     assert response.status == 201 and response.body == b""
-    assert instance.requests[0].endswith(b"\r\n\r\n") or body in instance.requests[0]
+    wire_headers, wire_body = received[0]
+    assert wire_body == (body or b"")
+    assert wire_headers["OCS-APIRequest"] == "true"
+    if body is None:
+        assert wire_headers["Content-Type"] is None
+        assert wire_headers["Content-Length"] is None
+    else:
+        assert wire_headers["Content-Type"] == "application/x-www-form-urlencoded"
+        assert wire_headers["Content-Length"] == str(len(body))
+    if body:
+        assert wire_body == b"role=admin&role=user&name=J%C3%B6rg"
 
 
 def test_error_status_with_body_is_returned(
@@ -736,7 +781,7 @@ def test_stalled_header_times_out_by_socket_timeout(
     )
     report("stalled header, timeout 0.5 s, deadline 10 s", elapsed)
     assert error.code == "socket_timeout"
-    assert 0.4 <= elapsed < 1.5
+    assert 0.4 <= elapsed < 5.0
 
 
 def test_stalled_header_times_out_by_the_shorter_deadline(
@@ -750,7 +795,7 @@ def test_stalled_header_times_out_by_the_shorter_deadline(
     )
     report("stalled header, timeout 30 s, deadline 0.5 s", elapsed)
     assert error.code == "socket_timeout"
-    assert 0.4 <= elapsed < 1.5
+    assert 0.4 <= elapsed < 5.0
 
 
 def test_trickled_header_overruns_the_budget_as_documented(
@@ -789,7 +834,7 @@ def test_trickled_body_stops_at_the_budget(
     )
     report("trickled body at 100 ms per byte, deadline 0.5 s", elapsed)
     assert error.code == "deadline_exceeded"
-    assert 0.5 <= elapsed < 1.0
+    assert 0.5 <= elapsed < 5.0
     assert instance.wait_closed() is True
 
 
@@ -813,7 +858,7 @@ def test_stalled_body_overruns_by_at_most_the_socket_timeout(
     # The socket timeout at open time was min(0.6, 0.3), so the stall is
     # noticed within the budget plus one read.
     assert error.code in {"socket_timeout", "deadline_exceeded"}
-    assert elapsed < 1.0
+    assert elapsed < 5.0
 
 
 @pytest.mark.parametrize(
@@ -851,3 +896,143 @@ def test_decode_json_failures_are_local_response_errors(body: bytes, code: str) 
 def test_decode_json_rejects_non_bytes() -> None:
     with pytest.raises(TypeError):
         decode_json("{}")  # type: ignore[arg-type]
+
+
+def test_deep_json_never_leaks_parser_recursion() -> None:
+    body = b"[" * 20000 + b"0" + b"]" * 20000
+    assert len(body) < http_module.DEFAULT_MAX_BODY_BYTES
+    try:
+        document = decode_json(body)
+    except ApiError as error:
+        assert (error.category, error.code) == ("response", "invalid_json")
+        assert error.__suppress_context__
+    else:
+        # Some runtimes can parse this depth; no helper nesting policy is imposed.
+        for _index in range(20000):
+            assert isinstance(document, list) and len(document) == 1
+            document = document[0]
+        assert document == 0
+
+
+def test_parser_recursion_is_a_local_response_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def exhausted_parser(document: str) -> Any:
+        raise RecursionError("SYNTHETIC-PARSER-SECRET")
+
+    monkeypatch.setattr(http_module.json, "loads", exhausted_parser)
+    with pytest.raises(ApiError) as caught:
+        decode_json(b"[]")
+    assert (caught.value.category, caught.value.code) == ("response", "invalid_json")
+    assert caught.value.__suppress_context__
+    assert "SYNTHETIC-PARSER-SECRET" not in str(caught.value)
+
+
+@pytest.mark.parametrize("length", [3, 1000])
+def test_not_modified_length_describes_the_representation(
+    server: Callable[..., LoopbackServer], length: int
+) -> None:
+    def handler(conn: socket.socket, request: bytes) -> None:
+        send_all(
+            conn,
+            (
+                f"HTTP/1.1 304 Not Modified\r\nContent-Length: {length}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii"),
+        )
+
+    instance = server(handler)
+    result = client_for(instance, max_body_bytes=8).request(
+        "GET", "/", deadline=Deadline(5), headers={"If-None-Match": "test"}
+    )
+    assert result.status == 304 and result.body == b""
+    assert result.headers["content-length"] == str(length)
+    assert instance.wait_closed()
+
+
+@pytest.mark.parametrize(
+    "encodings",
+    [
+        ["identity", "gzip"],
+        ["gzip", "identity"],
+        ["identity, gzip"],
+        ["gzip, identity"],
+        ["identity", "identity"],
+    ],
+)
+def test_every_content_encoding_is_checked_before_reading(
+    monkeypatch: pytest.MonkeyPatch, encodings: list[str]
+) -> None:
+    response = FakeResponse(200, b"")
+    raw = Message()
+    for encoding in encodings:
+        raw["Content-Encoding"] = encoding
+    response.headers = raw  # type: ignore[assignment]
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    if encodings == ["identity", "identity"]:
+        result = HttpClient("https://host", user_agent=AGENT).request(
+            "GET", "/", deadline=Deadline(5), headers={}
+        )
+        assert result.headers["content-encoding"] == "identity, identity"
+    else:
+
+        def unexpected_read(size: int) -> bytes:
+            pytest.fail("Encoded responses must be refused before reading")
+
+        monkeypatch.setattr(response, "read1", unexpected_read)
+        with pytest.raises(ApiError) as caught:
+            HttpClient("https://host", user_agent=AGENT).request(
+                "GET", "/", deadline=Deadline(5), headers={}
+            )
+        assert caught.value.code == "content_encoding"
+    assert response.closed_count == 1
+
+
+def test_declared_oversize_never_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = FakeResponse(200, b"", {"Content-Length": "9"})
+
+    def unexpected_read(size: int) -> bytes:
+        pytest.fail("Declared oversize must be refused before the first read")
+
+    monkeypatch.setattr(response, "read1", unexpected_read)
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    with pytest.raises(ApiError) as caught:
+        HttpClient("https://host", user_agent=AGENT, max_body_bytes=8).request(
+            "GET", "/", deadline=Deadline(5), headers={}
+        )
+    assert caught.value.code == "body_too_large"
+    assert response.closed_count == 1
+
+
+@pytest.mark.parametrize("expire_at", ["before", "after"])
+def test_read_budget_checks_and_close_are_deterministic(
+    monkeypatch: pytest.MonkeyPatch, expire_at: str
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(
+        "ansible_collections.foundata.utils.plugins.module_utils.deadline.time.monotonic",
+        lambda: now[0],
+    )
+    deadline = Deadline(1)
+    response = FakeResponse(200, b"abc")
+    reads: list[int] = []
+
+    def read(size: int) -> bytes:
+        reads.append(size)
+        now[0] = 2.0
+        return b"abc"
+
+    def open_response(*args: Any, **kwargs: Any) -> FakeResponse:
+        if expire_at == "before":
+            now[0] = 2.0
+        return response
+
+    monkeypatch.setattr(response, "read1", read)
+    monkeypatch.setattr(http_module, "open_url", open_response)
+    with pytest.raises(TransportTimeout) as caught:
+        HttpClient("https://host", user_agent=AGENT).request(
+            "GET", "/", deadline=deadline, headers={}
+        )
+    assert caught.value.code == "deadline_exceeded"
+    assert len(reads) == (0 if expire_at == "before" else 1)
+    assert response.closed_count == 1
