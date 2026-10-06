@@ -213,7 +213,10 @@ What it guarantees:
   Both streams are checked before decoding, parsing or returning them.
   `CommandResult` contains `rc`, byte `stdout` and `stderr`,
   `deadline_expired` and `cleanup_triggered`. Streams and execution data
-  never appear in repr, diagnostics or Ansible results from this helper.
+  are omitted from repr; raw streams never become diagnostics or Ansible
+  results from this helper. Command argv must be non-secret and safe for
+  framework debug logging; stdin and captured streams are not logged by this
+  helper. Execution repr suppression is not a framework logging guarantee.
 - GNU coreutils `timeout` at the `TimeoutProfile.executable` absolute path
   (default `/usr/bin/timeout`) is required. Its fallback duration is
   `ceil(remaining) + 1`, never zero; the selector observes expiry directly.
@@ -332,11 +335,15 @@ an unknown outcome.
 
 A product collection wraps the transport once: it sets authentication and
 content headers, translates the HTTP status into its own codes, decodes the
-body, and counts writes. The modules call that wrapper and never touch
-`HttpClient` directly.
+body. The module tracks write attempts and calls that wrapper, never
+`HttpClient` directly. In this example only `name` and `enabled` are documented
+public item fields; all other response fields stay internal.
 
 ```python
 import json
+from urllib.parse import quote
+
+from ansible.module_utils.basic import AnsibleModule
 
 from ansible_collections.foundata.utils.plugins.module_utils import deadline as deadline_util
 from ansible_collections.foundata.utils.plugins.module_utils import http_client as http_util
@@ -357,19 +364,39 @@ SCHEMA = ErrorSchema(
         http_util.ERROR_CODES,
         deadline_util.ERROR_CODES,
         {
+            "argument": {"invalid_name"},
             "auth": {"unauthenticated", "forbidden"},
             "internal": {None},
             "product": {"rejected", "unexpected_status", "not_found"},
+            "response": {"invalid_item"},
             "verification": {"not_persisted"},
         },
     ),
     fallback=("internal", None),
-    field_validators={"resource": str},
 )
 
 
 class ProductError(ApiError):
     """A failure the product client classified; never carries product text."""
+
+
+def item_path(name):
+    if (
+        not isinstance(name, str) or not 1 <= len(name) <= 128
+        or name in {".", ".."}
+        or any(ord(char) < 32 or ord(char) == 127 for char in name)
+    ):
+        raise ProductError("Invalid item name", category="argument", code="invalid_name")
+    return "/api/items/" + quote(name, safe="")
+
+
+def parse_item(document, name):
+    if (
+        not isinstance(document, dict) or document.get("name") != name
+        or not isinstance(document.get("enabled"), bool)
+    ):
+        raise ProductError("Invalid item response", category="response", code="invalid_item")
+    return {"name": document["name"], "enabled": document["enabled"]}
 
 
 class Client:
@@ -389,7 +416,6 @@ class Client:
             "Authorization": f"Bearer {params['api_key']}",
             "Accept": "application/json",
         }
-        self.writes = 0
 
     def call(self, method, path, body=None):
         headers = dict(self._headers)
@@ -411,24 +437,23 @@ class Client:
             raise ProductError("Unexpected status", category="product", code="unexpected_status", status=response.status)
         return decode_json(response.body)
 
-    def write(self, path, body):
-        self.writes += 1  # one attempt per run; a lost answer is settled by reading back
-        return self.call("POST", path, body)
-
-
 spec = http_util.http_argument_spec()
 spec["api_key"] = {"type": "str", "required": True, "no_log": True}
 spec["name"] = {"type": "str", "required": True}
 module = AnsibleModule(argument_spec=spec, supports_check_mode=True)
-client = Client(module.params)
+attempts = 0
 try:
-    current = client.call("GET", f"/api/items/{module.params['name']}")
+    client = Client(module.params)
+    name = module.params["name"]
+    path = item_path(name)
+    current = parse_item(client.call("GET", path), name)
     if current["enabled"]:
         module.exit_json(changed=False, item=current, changed_fields=[], verified="observed")
     if module.check_mode:
         module.exit_json(changed=True, item={**current, "enabled": True}, changed_fields=["enabled"], verified="predicted")
-    client.write(f"/api/items/{module.params['name']}", {"enabled": True})
-    after = client.call("GET", f"/api/items/{module.params['name']}")  # read back, never trust the write's answer
+    attempts += 1  # retained through response parsing and read-back; never retry blindly
+    client.call("POST", path, {"enabled": True})
+    after = parse_item(client.call("GET", path), name)  # verify the public postcondition
     if not after["enabled"]:
         raise ProductError("Change did not persist", category="verification", code="not_persisted")
     module.exit_json(changed=True, item=after, changed_fields=["enabled"], verified="observed")
@@ -438,15 +463,15 @@ except ApiError as error:
         error,
         schema=SCHEMA,
         msg="Enabling the item failed",
-        changed=client.writes > 0,
-        outcome="unknown" if client.writes > 0 else "unchanged",
-        fields={"resource": module.params["name"]},
+        changed=attempts > 0,
+        outcome="unknown" if attempts > 0 else "unchanged",
     )
 ```
 
-A failure after the write attempt serializes to this, and to nothing else:
-no product text, no URL, no traceback body even with
-`ANSIBLE_DISPLAY_TRACEBACK` enabled.
+The helper supplies these allowlisted failure fields. Ansible may add
+invocation metadata and a message-free call stack; devel may carry declared
+`no_log` values in its private controller protocol. Neither the handled
+exception text nor raw product responses are published by `fail_from`.
 
 ```json
 {
@@ -456,8 +481,7 @@ no product text, no URL, no traceback body even with
   "error_code": "rejected",
   "http_status": 409,
   "changed": true,
-  "outcome": "unknown",
-  "resource": "web"
+  "outcome": "unknown"
 }
 ```
 

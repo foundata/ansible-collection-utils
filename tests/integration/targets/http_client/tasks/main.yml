@@ -153,10 +153,11 @@
         url: "{{ __http_client_url }}"
         path: "/ok"
         deadline: 0
+        token: "SYNTHETIC-SECRET-integration-9c4d"
       ignore_errors: true
       register: __http_client_bad_deadline
 
-    - name: "Verify the failures carry the shared codes and nothing else"
+    - name: "Verify the failures carry safe shared codes"
       ansible.builtin.assert:
         that:
           - "__http_client_oversized is ansible.builtin.failed"
@@ -173,6 +174,16 @@
           - "__http_client_bad_deadline['error_category'] == 'argument'"
           - "__http_client_bad_deadline['error_code'] == 'invalid_deadline'"
           - "'scripted failure' not in (__http_client_oversized | ansible.builtin.to_json)"
+
+    - name: "Verify controller-visible results exclude private secrets and protocol fields"
+      ansible.builtin.assert:
+        that:
+          - "'_ansible_new_secrets' not in item"
+          - "'SYNTHETIC-SECRET' not in (item | ansible.builtin.to_json)"
+      loop:
+        - "{{ __http_client_ok }}"
+        - "{{ __http_client_echo }}"
+        - "{{ __http_client_bad_deadline }}"
   always:
     - name: "Read the server process ID"
       ansible.builtin.slurp:
