@@ -1,0 +1,80 @@
+---
+- name: "Locate the explicit GNU binary in images using uutils by default"
+  ansible.builtin.stat:
+    path: "/usr/bin/gnutimeout"
+  register: __exec_gnu_timeout
+
+- name: "Select the GNU timeout prerequisite"
+  ansible.builtin.set_fact:
+    __exec_timeout_path: "{{ '/usr/bin/gnutimeout' if __exec_gnu_timeout.stat.exists else '/usr/bin/timeout' }}"
+
+- name: "Record the qualified timeout implementation"
+  ansible.builtin.command:
+    argv: ["{{ __exec_timeout_path }}", "--version"]
+  changed_when:
+    - false
+  register: __exec_timeout
+
+- name: "Require GNU coreutils for the local test profile"
+  ansible.builtin.assert:
+    that:
+      - "__exec_timeout.stdout_lines[0].startswith('timeout (GNU coreutils)')"
+
+- name: "Exercise successful byte and status contracts"
+  exec_probe:
+    case: "{{ item }}"
+    timeout_executable: "{{ __exec_timeout_path }}"
+    secret: "SYNTHETIC-EXEC-SECRET-cd15"
+    exec:
+      kind: "package"
+      user: "root"
+      target_user: "root"
+  loop: ["roundtrip", "literal", "environment", "status", "write"]
+  register: __exec_success
+
+- name: "Verify successful contracts and secret exclusion"
+  ansible.builtin.assert:
+    that:
+      - "__exec_success.results | ansible.builtin.map(attribute='checked') | ansible.builtin.unique | ansible.builtin.list == [true]"
+      - "'SYNTHETIC-EXEC-SECRET-cd15' not in (__exec_success | ansible.builtin.to_json)"
+
+- name: "Exercise bounded failures and independent identities"
+  exec_probe:
+    case: "{{ item.case }}"
+    timeout_executable: "{{ __exec_timeout_path }}"
+    secret: "SYNTHETIC-EXEC-SECRET-cd15"
+    deadline: 1
+    exec:
+      kind: "package"
+      user: "root"
+      target_user: "root"
+  ignore_errors: true
+  loop:
+    - {case: "sleep", code: "deadline_exceeded"}
+    - {case: "stdout", code: "output_too_large"}
+    - {case: "stderr", code: "output_too_large"}
+    - {case: "descendant", code: "descendant_cleanup"}
+    - {case: "descendant_closed", code: "descendant_cleanup"}
+    - {case: "stdin_holder", code: "deadline_exceeded"}
+    - {case: "short_stdin", code: "command_io"}
+    - {case: "rejected", code: "rejected"}
+    - {case: "host_identity", code: "host_identity"}
+    - {case: "target_identity", code: "target_identity"}
+  register: __exec_failures
+
+- name: "Verify failure codes, cleanup, mutation status and secret exclusion"
+  ansible.builtin.assert:
+    that:
+      - "item.failed"
+      - "item.error_code == item.item.code"
+      - "item.elapsed < 5"
+      - "item.descendant_stopped"
+      - "item.changed == (item.item.case in ['sleep', 'short_stdin'])"
+      - "item.outcome == ('unknown' if item.changed else 'unchanged')"
+      - "item.deadline_expired == (item.item.case in ['sleep', 'stdin_holder'])"
+      - "'SYNTHETIC-EXEC-SECRET-cd15' not in (item | ansible.builtin.to_json)"
+      - "'PRODUCT-PRIVATE-c418' not in (item | ansible.builtin.to_json)"
+      - "'51dc-TERCES-CEXE-CITEHTNYS' not in (item | ansible.builtin.to_json)"
+  loop: "{{ __exec_failures.results }}"
+  loop_control:
+    label: "{{ item.item.case }}"
