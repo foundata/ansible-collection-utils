@@ -35,10 +35,14 @@ RESERVED_RESULT_KEYS = frozenset(
         "rc",
         "results",
         "skipped",
+        "stdout",
+        "stderr",
+        "stdout_lines",
+        "stderr_lines",
         "warnings",
     }
 )
-"""Result keys :func:`fail_from` refuses as extra fields."""
+"""Exact result keys refused as extra fields; the _ansible_ prefix is also reserved."""
 
 
 class FailsJson(Protocol):
@@ -92,7 +96,8 @@ class ErrorSchema:
     the category and code pair published for an error the schema does not
     know and must itself be allowed. ``field_validators`` maps each extra
     result key :func:`fail_from` may publish to a callable that returns the
-    value to publish or raises ``ValueError``.
+    value to publish or raises ``ValueError`` or ``TypeError``. Validators are
+    trusted product code and must allowlist public values, not just coerce them.
     """
 
     codes_by_category: Mapping[str, Collection[str | None]]
@@ -161,7 +166,7 @@ def fail_from(
         raise ValueError("msg must be a non-empty local message") from None
     if not isinstance(changed, bool):
         raise TypeError("changed must be a bool") from None
-    if outcome not in OUTCOMES:
+    if not isinstance(outcome, str) or outcome not in OUTCOMES:
         raise ValueError(f"outcome must be one of {sorted(OUTCOMES)}") from None
     if (outcome == "unchanged") == changed:
         raise ValueError(
@@ -181,7 +186,7 @@ def fail_from(
 
     extra: dict[str, object] = {}
     for key, value in (fields or {}).items():
-        if key in RESERVED_RESULT_KEYS:
+        if key in RESERVED_RESULT_KEYS or key.startswith("_ansible_"):
             raise ValueError(f"Result key {key!r} is reserved") from None
         validator = schema.field_validators.get(key)
         if validator is None:
@@ -190,7 +195,7 @@ def fail_from(
             ) from None
         try:
             extra[key] = validator(value)
-        except ValueError:
+        except (ValueError, TypeError):
             raise ValueError(f"Result key {key!r} failed its validator") from None
 
     module.fail_json(

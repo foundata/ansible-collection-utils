@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from typing import Any, NoReturn
 
 import pytest
@@ -13,7 +14,6 @@ from ansible.module_utils.common.text.converters import to_bytes
 
 from ansible_collections.foundata.utils.plugins.module_utils.errors import (
     OUTCOMES,
-    RESERVED_RESULT_KEYS,
     ApiError,
     ErrorSchema,
     TransportTimeout,
@@ -193,7 +193,35 @@ def test_fields_are_validated_and_published() -> None:
     assert (result["changed"], result["outcome"]) == (True, "unknown")
 
 
-@pytest.mark.parametrize("key", sorted(RESERVED_RESULT_KEYS))
+@pytest.mark.parametrize(
+    "key",
+    [
+        "changed",
+        "error_category",
+        "error_code",
+        "exception",
+        "failed",
+        "http_status",
+        "msg",
+        "outcome",
+        "ansible_facts",
+        "deprecations",
+        "diff",
+        "invocation",
+        "rc",
+        "results",
+        "skipped",
+        "warnings",
+        "stdout",
+        "stderr",
+        "stdout_lines",
+        "stderr_lines",
+        "_ansible_no_log",
+        "_ansible_verbose_always",
+        "_ansible_new_secrets",
+        "_ansible_future_key",
+    ],
+)
 def test_reserved_result_keys_are_rejected(key: str) -> None:
     module = RecordingModule()
     with pytest.raises(ValueError, match="reserved"):
@@ -222,9 +250,12 @@ def test_field_without_validator_is_rejected() -> None:
         )
 
 
-def test_failing_validator_is_reported_without_the_value() -> None:
+@pytest.mark.parametrize("exception", [ValueError, TypeError])
+def test_failing_validator_is_reported_without_the_value(
+    exception: type[Exception],
+) -> None:
     def reject(value: object) -> object:
-        raise ValueError(f"bad value {value!r}")
+        raise exception(f"bad value {value!r}")
 
     with pytest.raises(ValueError) as excinfo:
         fail_from(
@@ -249,6 +280,8 @@ def test_failing_validator_is_reported_without_the_value() -> None:
         (True, "unchanged"),
         (True, "done"),
         (False, None),
+        (False, []),
+        (False, {}),
     ],
 )
 def test_outcome_must_agree_with_changed(changed: bool, outcome: Any) -> None:
@@ -262,6 +295,32 @@ def test_outcome_must_agree_with_changed(changed: bool, outcome: Any) -> None:
             outcome=outcome,
         )
     assert OUTCOMES == {"unchanged", "unknown", "changed"}
+
+
+@pytest.mark.parametrize("validator_failure", [False, True])
+def test_programming_failures_suppress_handled_error(validator_failure: bool) -> None:
+    def reject(value: object) -> object:
+        raise TypeError(SECRET)
+
+    try:
+        try:
+            raise ApiError(SECRET)
+        except ApiError as error:
+            options: dict[str, Any] = {"outcome": []}
+            if validator_failure:
+                options = {"outcome": "unchanged", "fields": {"resource": SECRET}}
+            fail_from(
+                RecordingModule(),
+                error,
+                schema=schema(resource=reject),
+                msg="Local",
+                changed=False,
+                **options,
+            )
+    except ValueError:
+        assert SECRET not in traceback.format_exc()
+    else:
+        pytest.fail("A local programming failure was required")
 
 
 @pytest.mark.parametrize(
