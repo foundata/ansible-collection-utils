@@ -2,7 +2,7 @@
 
 This repository contains the `foundata.utils` Ansible Collection: shared
 transport and safety mechanics for foundata's product collections. It ships
-module utilities and a documentation fragment only. There are no modules,
+module utilities and documentation fragments only. There are no modules,
 roles or playbooks; a product collection imports the utilities into its own
 modules.
 
@@ -34,6 +34,9 @@ newer where a module runs.
   - [`deadline`](#deadline)
   - [`http_client`](#http-client)
   - [Documentation fragment `foundata.utils.http_client`](#fragment-http)
+  - [`exec`](#exec)
+  - [Documentation fragment `foundata.utils.exec`](#fragment-exec)
+  - [Shared error codes](#error-codes)
 - [Limits of the elapsed-time budget](#budget-limits)
 - [Using the helpers in a product module](#usage)
 - [Dependencies](#dependencies)
@@ -187,9 +190,124 @@ merged documentation against its real argument specification.
 
 
 
+### `exec`<a id="exec"></a>
+
+`run_bounded(module, execution, profile=..., deadline=..., stdin=None,
+max_output_bytes=1 MiB, write=False)` executes one prepared command on a POSIX
+execution host. Import
+the utility as `from ...module_utils import exec as exec_util`.
+
+What it guarantees:
+
+- `Execution` carries argv, absolute working directory, host environment
+  additions, an effective-environment validator, host and application UIDs,
+  and a separate application identity command. Products validate executable
+  paths, identifiers, prefixes and option boundaries before preparing it.
+- `module.run_command` receives an argument list, `encoding=None`,
+  `binary_data=True`, `check_rc=False`, `handle_exceptions=False`,
+  `use_unsafe_shell=False` and `expand_user_and_vars=False`. Literal `$HOME`,
+  `${HOME}` and `~` stay literal. Stdin is bytes or `None`; empty bytes are
+  refused because core does not open a pipe for them.
+- A synchronous selector supervisor writes stdin without blocking, reads
+  each stream under its own byte limit and checks the shared `Deadline`.
+  Both streams are checked before decoding, parsing or returning them.
+  `CommandResult` contains `rc`, byte `stdout` and `stderr`,
+  `deadline_expired` and `cleanup_triggered`. Streams and execution data
+  never appear in repr, diagnostics or Ansible results from this helper.
+- GNU coreutils `timeout` at the `TimeoutProfile.executable` absolute path
+  (default `/usr/bin/timeout`) is required. Its fallback duration is
+  `ceil(remaining) + 1`, never zero; the selector observes expiry directly.
+  Command exits 124, 137 and negative signal statuses alone are not expiry.
+  `kill_after` defaults to one second and is separate from the deadline.
+  TERM grace and each of at most two reap waits use that allowance; process
+  creation, scheduling and uninterruptible kernel work are not hard-bounded.
+- The supervisor sends TERM, then KILL when needed, to the wrapper's process
+  group. It also cleans ordinary descendants after a parent exits. A
+  cleanup intervention is a failure, even if the parent returned zero.
+  Cleanup waiting is bounded; process creation and uninterruptible kernel
+  work are not hard real-time operations.
+- The environment validator sees the actual inherited environment, the
+  module's `run_command_environ_update`, and the execution's additions,
+  including core's `PYTHONPATH` cleanup. An invalid working directory or
+  environment fails before starting a command. No environment is silently
+  removed; the product must document and enforce its inherited policy.
+- With `write=True`, the runner compares the host effective UID and then
+  executes `identity_argv` under the same deadline. Its bounded output must
+  equal the expected numeric application UID. The product must build this
+  probe through the same container or wrapper as the real command.
+- Mechanical failures are `ApiError`: `CommandError` for execution, size,
+  environment, identity or cleanup failures; `CommandTimeout`, also a
+  `TransportTimeout`, for observed expiry. Errors from a supervised command
+  carry its bounded internal `result` when available. Preflight failures
+  carry no result. Original exception text is discarded. The helper never
+  retries.
+- Command errors expose `write_attempted`: true only when the requested
+  `write=True` invocation started, not for its identity probe or a preflight
+  failure. This is attempt metadata, not proof of mutation. A deadline
+  exhausted before execution raises the base `TransportTimeout` without it.
+
+What it does not do:
+
+- It does not decode output or decide whether a product status is success.
+  Nonzero exits return a `CommandResult`; a reviewed product parser checks
+  the status and shape, and maps diagnostics to local codes. Raw output
+  must never reach `exit_json`, `fail_json`, warnings, diffs or logs.
+- It does not decide mutation outcome. Count completed write calls in the
+  product through parsing and read-back. An interrupted or uncertain write uses
+  `fail_from(..., changed=True, outcome="unknown")`; reconcile by identity
+  before any retry, using the original deadline. On failure, preserve earlier
+  attempts and include `getattr(error, "write_attempted", False)` for this call.
+- It does not switch the module user. Use Ansible `become`. It does not
+  kill detached processes, container-side processes or remote work merely
+  because their host client stopped. Such deployments need their own
+  cleanup qualification and must retain an unknown write outcome.
+
+`LocatorProfile` declares a product's accepted fields, a product-owned
+`prepare(locator, command)` function and four required qualification records:
+`deadline`, `cleanup`, `identity`, `environment`. `resolve()` rejects a wrong
+kind or unused non-null fields before product validation. Core inserts null
+values for omitted suboptions; these are not treated as supplied fields.
+The prepare function rejects conflicting values and builds both command and
+identity prefixes. The declared forms are:
+
+|   Kind    |                                          Command and identity channel                                           | Qualification boundary |
+| --------- | --------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `package` | Absolute local binary; host UID plus an independent effective-UID probe                                         | Local GNU timeout/process-group mechanics exercised by the integration target; product binary remains product-owned |
+| `podman`  | Product-validated engine prefix with explicit container and application-user options for both command and probe | Product must qualify engine version, container identity, target environment and in-container survivors after expiry |
+| `custom`  | Validated fixed wrapper prefix, including a documented application-user transition                              | Product must qualify the wrapper's identity probe, target environment, deadline propagation and cleanup; this is trusted execution, not confinement |
+
+Only the local process mechanics are qualified here. These declarations do
+not advertise tested Zammad, Nextcloud, Podman, Docker or user-switching
+wrappers. Their consumers supply and test the product records before use.
+
+
+### Documentation fragment `foundata.utils.exec`<a id="fragment-exec"></a>
+
+Documents `deadline` and the `exec` locator dictionary, matching the fresh
+`exec_argument_spec()`. Products narrow choices and suboptions and document
+their supported profiles. `env` and `target_env` are `no_log` maps, but
+secrets must still use stdin because prefixes can expose environment values
+as process arguments. Consumers validate merged documentation and specs.
+
+
+### Shared error codes<a id="error-codes"></a>
+
+Merge the used helpers' `ERROR_CODES` with the product schema through
+`errors.merge_error_codes`. `errors` adds no transport codes. The full union:
+
+|  Category   | Codes |
+| ----------- | ----- |
+| `argument`  | `invalid_ca_path`, `invalid_deadline`, `invalid_environment`, `invalid_execution`, `invalid_locator`, `invalid_timeout`, `invalid_url` |
+| `identity`  | `host_identity`, `target_identity` |
+| `request`   | `invalid_path` |
+| `response`  | `body_too_large`, `content_encoding`, `invalid_command_result`, `invalid_json`, `invalid_utf8`, `output_too_large` |
+| `timeout`   | `deadline_exceeded`, `socket_timeout` |
+| `transport` | `command_io`, `command_start`, `connection_failed`, `descendant_cleanup`, `http_protocol`, `io_error`, `tls_validation` |
+
+
 ## Limits of the elapsed-time budget<a id="budget-limits"></a>
 
-The deadline is cooperative. The transport checks it before it opens a
+The HTTP deadline is cooperative. The transport checks it before it opens a
 connection and before and after each body read, and derives the socket
 timeout from it. Everything between two checks can run past the budget:
 
