@@ -49,11 +49,20 @@ newer where a module runs.
 ## Included content<a id="content"></a>
 
 Every helper lives in `plugins/module_utils/` and is imported as
-`ansible_collections.foundata.utils.plugins.module_utils.<name>`. Every
-public name is an interface of this collection; names with a leading
-underscore are internal. Interfaces may still change: nothing is published
-yet, and the helpers are changed together with their consumers until the
-first publication.
+`ansible_collections.foundata.utils.plugins.module_utils.<name>`. The supported
+symbols are listed below; incidental imports from other modules are not
+interfaces. Names with a leading underscore are internal.
+
+|    Module     | Supported symbols |
+| ------------- | ----------------- |
+| `errors`      | `ApiError`, `TransportTimeout`, `ErrorSchema`, `FailsJson`, `fail_from`, `merge_error_codes`, `OUTCOMES`, `RESERVED_RESULT_KEYS` |
+| `deadline`    | `Deadline`, `ERROR_CODES` |
+| `http_client` | `HttpClient`, `HttpResponse`, `decode_json`, `http_argument_spec`, `ERROR_CODES`, `HTTP_METHODS`, `RESERVED_HEADERS`, `DEFAULT_TIMEOUT_SECONDS`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_BODY_BYTES` |
+| `exec`        | `Execution`, `TimeoutProfile`, `LocatorProfile`, `CommandResult`, `CommandError`, `CommandTimeout`, `RunsCommand`, `run_bounded`, `exec_argument_spec`, `ERROR_CODES`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_OUTPUT_BYTES` |
+
+Nothing is published yet; helpers and consumers change together. At first
+publication utils and its consumers are released together; thereafter public
+signatures, exceptions, defaults and fragment options are versioned interfaces.
 
 
 ### `errors`<a id="errors"></a>
@@ -136,8 +145,8 @@ What it guarantees:
   and the resulting URL must keep the endpoint's origin and path prefix. A
   base URL with credentials, a query or a fragment is refused.
 - Certificates are validated by default; `ca_path` adds a private authority
-  and must be a readable file. `validate_certs=False` is never chosen
-  automatically.
+  and must name an existing regular file; failures loading it are translated
+  locally. `validate_certs=False` is never chosen automatically.
 - Redirects are not followed: a 3xx response is returned like any other, so
   credentials never travel to another origin. `netrc` is not read. Only the
   `identity` content encoding is requested and accepted; a compressed
@@ -148,6 +157,8 @@ What it guarantees:
   before and after every read and a byte limit. A declared `Content-Length`
   beyond the limit is refused before the first read; a body shorter than its
   declared length is a protocol failure, not a truncated success.
+  HEAD and 304 responses have no body; their representation length is not a
+  received-body size and is exempt from these checks.
 - Every response is closed, including an error status, a refused encoding,
   an oversized body and a failed read.
 - An HTTP error status is a response, not an exception: its body is read
@@ -160,8 +171,8 @@ What it guarantees:
   `transport` (`connection_failed`,
   `tls_validation`, `io_error`, `http_protocol`) and `timeout`
   (`socket_timeout`, `deadline_exceeded`, both as `TransportTimeout`).
-  Every translation drops the original exception, so no URL, header or
-  server text enters an exception message.
+  Translated exception messages are local and suppress the original displayed
+  exception chain, so no URL, header or server text enters those messages.
 - `decode_json(body)` turns a UTF-8 JSON body into Python values and raises
   `response` errors `invalid_utf8` and `invalid_json` without the body text.
   An empty body is not a document: a product that answers a write without a

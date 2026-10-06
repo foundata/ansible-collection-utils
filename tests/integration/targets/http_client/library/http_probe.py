@@ -12,7 +12,7 @@ description:
   - >-
     A test-only consumer of the foundata.utils module utilities: it builds the client from the shared
     options, sends one request and reports what the transport returned.
-  - "It is part of the integration tests and is not shipped with the collection."
+  - "It ships as test material, not as a supported collection module."
 version_added: "1.0.0"
 author:
   - foundata Development Team (@foundata)

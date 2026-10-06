@@ -135,7 +135,7 @@ class HttpClient:
             )
         if ca_path is not None and not os.path.isfile(ca_path):
             raise ApiError(
-                "The certificate authority path is not a readable file",
+                "The certificate authority path is not an existing regular file",
                 category="argument",
                 code="invalid_ca_path",
             )
@@ -310,6 +310,7 @@ class HttpClient:
         A declared ``Content-Length`` beyond the limit is refused before the
         first read; a body shorter than its declared length is a protocol
         failure, because ``read1`` reports a closed connection as the end.
+        HEAD and 304 carry no body; their length describes a representation.
         """
         if method == "HEAD" or response.code == 304:
             deadline.remaining()
