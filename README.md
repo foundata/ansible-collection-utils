@@ -356,8 +356,12 @@ from urllib.parse import quote
 
 from ansible.module_utils.basic import AnsibleModule
 
-from ansible_collections.foundata.utils.plugins.module_utils import deadline as deadline_util
-from ansible_collections.foundata.utils.plugins.module_utils import http_client as http_util
+from ansible_collections.foundata.utils.plugins.module_utils import (
+    deadline as deadline_util,
+)
+from ansible_collections.foundata.utils.plugins.module_utils import (
+    http_client as http_util,
+)
 from ansible_collections.foundata.utils.plugins.module_utils.deadline import Deadline
 from ansible_collections.foundata.utils.plugins.module_utils.errors import (
     ApiError,
@@ -393,20 +397,26 @@ class ProductError(ApiError):
 
 def item_path(name):
     if (
-        not isinstance(name, str) or not 1 <= len(name) <= 128
+        not isinstance(name, str)
+        or not 1 <= len(name) <= 128
         or name in {".", ".."}
         or any(ord(char) < 32 or ord(char) == 127 for char in name)
     ):
-        raise ProductError("Invalid item name", category="argument", code="invalid_name")
+        raise ProductError(
+            "Invalid item name", category="argument", code="invalid_name"
+        )
     return "/api/items/" + quote(name, safe="")
 
 
 def parse_item(document, name):
     if (
-        not isinstance(document, dict) or document.get("name") != name
+        not isinstance(document, dict)
+        or document.get("name") != name
         or not isinstance(document.get("enabled"), bool)
     ):
-        raise ProductError("Invalid item response", category="response", code="invalid_item")
+        raise ProductError(
+            "Invalid item response", category="response", code="invalid_item"
+        )
     return {"name": document["name"], "enabled": document["enabled"]}
 
 
@@ -439,14 +449,34 @@ class Client:
         )
         if response.status in (401, 403) or 300 <= response.status < 400:
             code = "forbidden" if response.status == 403 else "unauthenticated"
-            raise ProductError("Authentication failed", category="auth", code=code, status=response.status)
+            raise ProductError(
+                "Authentication failed",
+                category="auth",
+                code=code,
+                status=response.status,
+            )
         if response.status == 404:
-            raise ProductError("Not found", category="product", code="not_found", status=404)
-        if response.status >= 400:  # the product refused the request; its text stays unread
-            raise ProductError("Request rejected", category="product", code="rejected", status=response.status)
+            raise ProductError(
+                "Not found", category="product", code="not_found", status=404
+            )
+        if (
+            response.status >= 400
+        ):  # the product refused the request; its text stays unread
+            raise ProductError(
+                "Request rejected",
+                category="product",
+                code="rejected",
+                status=response.status,
+            )
         if response.status != 200:
-            raise ProductError("Unexpected status", category="product", code="unexpected_status", status=response.status)
+            raise ProductError(
+                "Unexpected status",
+                category="product",
+                code="unexpected_status",
+                status=response.status,
+            )
         return decode_json(response.body)
+
 
 spec = http_util.http_argument_spec()
 spec["api_key"] = {"type": "str", "required": True, "no_log": True}
@@ -459,15 +489,30 @@ try:
     path = item_path(name)
     current = parse_item(client.call("GET", path), name)
     if current["enabled"]:
-        module.exit_json(changed=False, item=current, changed_fields=[], verified="observed")
+        module.exit_json(
+            changed=False, item=current, changed_fields=[], verified="observed"
+        )
     if module.check_mode:
-        module.exit_json(changed=True, item={**current, "enabled": True}, changed_fields=["enabled"], verified="predicted")
-    attempts += 1  # retained through response parsing and read-back; never retry blindly
+        module.exit_json(
+            changed=True,
+            item={**current, "enabled": True},
+            changed_fields=["enabled"],
+            verified="predicted",
+        )
+    attempts += (
+        1  # retained through response parsing and read-back; never retry blindly
+    )
     client.call("POST", path, {"enabled": True})
-    after = parse_item(client.call("GET", path), name)  # verify the public postcondition
+    after = parse_item(
+        client.call("GET", path), name
+    )  # verify the public postcondition
     if not after["enabled"]:
-        raise ProductError("Change did not persist", category="verification", code="not_persisted")
-    module.exit_json(changed=True, item=after, changed_fields=["enabled"], verified="observed")
+        raise ProductError(
+            "Change did not persist", category="verification", code="not_persisted"
+        )
+    module.exit_json(
+        changed=True, item=after, changed_fields=["enabled"], verified="observed"
+    )
 except ApiError as error:
     fail_from(
         module,
