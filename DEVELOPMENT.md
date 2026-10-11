@@ -1,5 +1,10 @@
 # Development
 
+<!--
+SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 Follow the
 [foundata Ansible guidelines](https://foundata.com/en/guidelines/ansible-modules/).
 

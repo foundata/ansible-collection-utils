@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """Mechanical locator options; consumers document their qualified profiles."""
 
 from __future__ import annotations

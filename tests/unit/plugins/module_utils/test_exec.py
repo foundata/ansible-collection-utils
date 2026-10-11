@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """Recorded command calls and adversarial boundary cases, without a product."""
 
 from __future__ import annotations

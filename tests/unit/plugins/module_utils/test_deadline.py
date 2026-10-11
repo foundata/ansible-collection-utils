@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """Tests of the shared elapsed-time budget."""
 
 from __future__ import annotations

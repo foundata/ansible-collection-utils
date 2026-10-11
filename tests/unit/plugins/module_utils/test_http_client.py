@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """Tests of the bounded byte transport.
 
 The loopback server cases exercise real sockets on 127.0.0.1 and print the

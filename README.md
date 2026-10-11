@@ -1,5 +1,10 @@
 # Ansible collection: `foundata.utils`
 
+<!--
+SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 This repository contains the `foundata.utils` Ansible Collection: shared
 transport and safety mechanics for foundata's product collections. It ships
 module utilities and documentation fragments only. There are no modules,
@@ -569,10 +574,8 @@ every supported ansible-core version.
 ## Licensing, copyright<a id="licensing-copyright"></a>
 
 <!--REUSE-IgnoreStart-->
-<!-- rumdl-disable MD034 --><!-- should match SPDX-PackageSupplier -->
-Copyright (c) 2026, [foundata GmbH](https://foundata.com/)
-(https://foundata.com)
-<!-- rumdl-enable MD034 -->
+<!-- should match SPDX-PackageSupplier -->
+Copyright (c) 2026, foundata GmbH <https://foundata.com>
 
 This project is licensed under the GNU General Public License v3.0 or later
 (SPDX-License-Identifier: `GPL-3.0-or-later`), see

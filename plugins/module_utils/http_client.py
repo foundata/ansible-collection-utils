@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """Bounded byte transport over ``open_url`` for product API clients.
 
 The client sends bytes and returns bytes. A product client encodes its

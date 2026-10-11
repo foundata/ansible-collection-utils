@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """Bounded command execution; locator policy and output parsing stay in products.
 
 The synchronous supervisor owns all three pipes in run_command's callback.

@@ -1,5 +1,5 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-# SPDX-FileCopyrightText: foundata GmbH (https://foundata.com)
 """A scripted loopback HTTP server for the http_client integration target.
 
 Usage: loopback_server.py <state-directory> [<lifetime-seconds>]

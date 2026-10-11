@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 ---
 - name: "Locate the explicit GNU binary in images using uutils by default"
   ansible.builtin.stat:

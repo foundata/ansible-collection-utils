@@ -1,6 +1,9 @@
 # Integration target: the shipped http transport through a real task on this
 # ansible-core version, against a scripted loopback server in a separate
 # process.
+#
+# SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
 - name: "Run the http_client target"
