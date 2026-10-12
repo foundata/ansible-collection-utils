@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import gzip
 import io
+import shutil
 import socket
 import ssl
+import subprocess
 import time
 from collections.abc import Callable, Iterator
 from email.message import Message
@@ -934,6 +936,89 @@ def test_stalled_body_overruns_by_at_most_the_socket_timeout(
     # noticed within the budget plus one read.
     assert error.code in {"socket_timeout", "deadline_exceeded"}
     assert elapsed < 5.0
+
+
+@pytest.fixture(scope="module")
+def tls_files(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """A self-signed certificate for localhost and 127.0.0.1, made per run.
+
+    The collection ships no private key; the test environment's openssl
+    command generates a short-lived one, with the default CA extensions.
+    """
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.fail("The TLS tests need the openssl command to make a certificate")
+    directory = tmp_path_factory.mktemp("tls")
+    certificate, key = directory / "tls-test.crt", directory / "tls-test.key"
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-sha256",
+            "-days",
+            "2",
+            "-subj",
+            "/CN=foundata.utils test certificate",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            "-keyout",
+            str(key),
+            "-out",
+            str(certificate),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    return certificate, key
+
+
+@pytest.fixture
+def tls_server_context(tls_files: tuple[Path, Path]) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(tls_files[0]), str(tls_files[1]))
+    return context
+
+
+def test_self_signed_certificate_is_rejected_by_default(
+    server: Callable[..., LoopbackServer], tls_server_context: ssl.SSLContext
+) -> None:
+    instance = server(respond(200, b"ok"), tls_context=tls_server_context)
+    with pytest.raises(ApiError) as excinfo:
+        client_for(instance).request(
+            "GET", "/", deadline=Deadline(5), headers=NO_HEADERS
+        )
+    assert (excinfo.value.category, excinfo.value.code) == (
+        "transport",
+        "tls_validation",
+    )
+    assert instance.requests == []
+
+
+def test_private_ca_path_makes_the_certificate_acceptable(
+    server: Callable[..., LoopbackServer],
+    tls_server_context: ssl.SSLContext,
+    tls_files: tuple[Path, Path],
+) -> None:
+    instance = server(respond(200, b"ok"), tls_context=tls_server_context)
+    client = client_for(instance, ca_path=str(tls_files[0]))
+    response = client.request("GET", "/", deadline=Deadline(5), headers=NO_HEADERS)
+    assert (response.status, response.body) == (200, b"ok")
+
+
+def test_validate_certs_false_accepts_the_certificate(
+    server: Callable[..., LoopbackServer], tls_server_context: ssl.SSLContext
+) -> None:
+    instance = server(respond(200, b"ok"), tls_context=tls_server_context)
+    response = client_for(instance, validate_certs=False).request(
+        "GET", "/", deadline=Deadline(5), headers=NO_HEADERS
+    )
+    assert response.status == 200
 
 
 @pytest.mark.parametrize(
