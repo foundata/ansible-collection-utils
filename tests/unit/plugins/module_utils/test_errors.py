@@ -42,6 +42,10 @@ class RecordingModule:
         raise SystemExit(1)
 
 
+FALLBACK = ("internal", None)
+VALIDATED = ("product", "validation_failed")
+
+
 def schema(**validators: Any) -> ErrorSchema:
     return ErrorSchema(
         codes_by_category={
@@ -78,6 +82,43 @@ def test_api_error_defaults_and_attributes() -> None:
     )
     error = ApiError("boom", category="product", code="not_found", status=404)
     assert (error.category, error.code, error.status) == ("product", "not_found", 404)
+
+
+@pytest.mark.parametrize("explicit_cause", [False, True])
+def test_validator_exception_cannot_chain_the_handled_error(
+    explicit_cause: bool,
+) -> None:
+    module = RecordingModule()
+    failure = KeyError("x")
+    cause = ApiError(SECRET)
+    with pytest.raises(KeyError) as caught:
+        try:
+            raise cause
+        except ApiError as handled:
+
+            def validator(value: object) -> NoReturn:
+                if explicit_cause:
+                    raise failure from cause
+                raise failure
+
+            fail_from(
+                module,
+                handled,
+                schema=schema(resource=validator),
+                msg="Local failure",
+                changed=False,
+                outcome="unchanged",
+                fields={"resource": "x"},
+            )
+
+    assert caught.value is failure
+    assert failure.args == ("x",)
+    assert failure.__context__ is None
+    assert failure.__cause__ is None
+    assert SECRET not in "".join(
+        traceback.format_exception(type(failure), failure, failure.__traceback__)
+    )
+    assert module.result is None
 
 
 def test_transport_timeout_is_a_timeout_api_error() -> None:
@@ -222,54 +263,131 @@ def test_fields_are_validated_and_published() -> None:
         "_ansible_future_key",
     ],
 )
-def test_reserved_result_keys_are_rejected(key: str) -> None:
+def test_reserved_result_keys_are_dropped(key: str) -> None:
     module = RecordingModule()
-    with pytest.raises(ValueError, match="reserved"):
+    with pytest.raises(SystemExit):
         fail_from(
             module,
-            ApiError(),
+            ApiError(category="product", code="validation_failed"),
             schema=schema(**{key: str}),
             msg="m",
             changed=False,
             outcome="unchanged",
             fields={key: "x"},
         )
-    assert module.result is None
+    assert module.result is not None
+    assert module.result.get(key) != "x"
+    assert (module.result["changed"], module.result["outcome"]) == (False, "unchanged")
+    assert (module.result["error_category"], module.result["error_code"]) == VALIDATED
 
 
-def test_field_without_validator_is_rejected() -> None:
-    with pytest.raises(ValueError, match="no validator"):
+def test_field_without_validator_is_dropped() -> None:
+    module = RecordingModule()
+    with pytest.raises(SystemExit):
         fail_from(
-            RecordingModule(),
-            ApiError(),
+            module,
+            ApiError(category="product", code="validation_failed"),
             schema=schema(),
             msg="m",
-            changed=False,
-            outcome="unchanged",
+            changed=True,
+            outcome="unknown",
             fields={"resource": "web"},
         )
+    assert module.result is not None
+    assert "resource" not in module.result
+    assert (module.result["changed"], module.result["outcome"]) == (True, "unknown")
+    assert (module.result["error_category"], module.result["error_code"]) == VALIDATED
+
+
+@pytest.mark.parametrize("key", [1, None, ("resource",), b"resource"])
+def test_non_str_field_key_is_dropped(key: Any) -> None:
+    module = RecordingModule()
+    with pytest.raises(SystemExit):
+        fail_from(
+            module,
+            ApiError(category="product", code="validation_failed"),
+            schema=schema(resource=str),
+            msg="m",
+            changed=True,
+            outcome="unknown",
+            fields={key: "web", "resource": "web"},
+        )
+    assert module.result is not None
+    assert module.result["resource"] == "web"
+    assert (module.result["changed"], module.result["outcome"]) == (True, "unknown")
+    assert (module.result["error_category"], module.result["error_code"]) == VALIDATED
 
 
 @pytest.mark.parametrize("exception", [ValueError, TypeError])
-def test_failing_validator_is_reported_without_the_value(
+def test_rejected_value_is_dropped_without_the_value(
     exception: type[Exception],
 ) -> None:
     def reject(value: object) -> object:
         raise exception(f"bad value {value!r}")
 
-    with pytest.raises(ValueError) as excinfo:
+    module = RecordingModule()
+    with pytest.raises(SystemExit):
         fail_from(
-            RecordingModule(),
-            ApiError(),
+            module,
+            ApiError(category="product", code="validation_failed"),
             schema=schema(resource=reject),
             msg="m",
             changed=False,
             outcome="unchanged",
             fields={"resource": SECRET},
         )
-    assert SECRET not in str(excinfo.value)
-    assert excinfo.value.__cause__ is None
-    assert excinfo.value.__suppress_context__
+    assert module.result is not None
+    assert "resource" not in module.result
+    assert SECRET not in repr(module.result)
+    assert (module.result["error_category"], module.result["error_code"]) == VALIDATED
+
+
+def test_rejected_identity_keeps_the_argument_code() -> None:
+    # The caller's invalid name is the reason for the failure; the validator
+    # rightly refuses to publish it, and the code must still say so.
+    module = RecordingModule()
+    with pytest.raises(SystemExit):
+        fail_from(
+            module,
+            ApiError(category="argument", code="invalid_name"),
+            schema=ErrorSchema(
+                codes_by_category={"argument": {"invalid_name"}, "internal": {None}},
+                fallback=("internal", None),
+                field_validators={"name": reject_unless_lowercase},
+            ),
+            msg="m",
+            changed=False,
+            outcome="unchanged",
+            fields={"name": "Web-01"},
+        )
+    assert module.result is not None
+    assert "name" not in module.result
+    assert (module.result["error_category"], module.result["error_code"]) == (
+        "argument",
+        "invalid_name",
+    )
+
+
+def test_unknown_pair_still_falls_back_with_dropped_fields() -> None:
+    module = RecordingModule()
+    with pytest.raises(SystemExit):
+        fail_from(
+            module,
+            ApiError(category="product", code="unlisted"),
+            schema=schema(),
+            msg="m",
+            changed=False,
+            outcome="unchanged",
+            fields={"resource": "web"},
+        )
+    assert module.result is not None
+    assert (module.result["error_category"], module.result["error_code"]) == FALLBACK
+
+
+def reject_unless_lowercase(value: object) -> object:
+    if isinstance(value, str) and value.isalpha() and value.islower():
+        return value
+    raise ValueError("invalid name")
 
 
 @pytest.mark.parametrize(
@@ -297,25 +415,18 @@ def test_outcome_must_agree_with_changed(changed: bool, outcome: Any) -> None:
     assert OUTCOMES == {"unchanged", "unknown", "changed"}
 
 
-@pytest.mark.parametrize("validator_failure", [False, True])
-def test_programming_failures_suppress_handled_error(validator_failure: bool) -> None:
-    def reject(value: object) -> object:
-        raise TypeError(SECRET)
-
+def test_programming_failures_suppress_handled_error() -> None:
     try:
         try:
             raise ApiError(SECRET)
         except ApiError as error:
-            options: dict[str, Any] = {"outcome": []}
-            if validator_failure:
-                options = {"outcome": "unchanged", "fields": {"resource": SECRET}}
             fail_from(
                 RecordingModule(),
                 error,
-                schema=schema(resource=reject),
+                schema=schema(),
                 msg="Local",
                 changed=False,
-                **options,
+                outcome=[],  # type: ignore[arg-type]
             )
     except ValueError:
         assert SECRET not in traceback.format_exc()

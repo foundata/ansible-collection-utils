@@ -91,10 +91,19 @@ What it guarantees:
   text, so a product response that leaked into an exception message does not
   reach the result, the traceback or the log, even with
   `ANSIBLE_DISPLAY_TRACEBACK` enabled.
-- `fail_from` refuses result keys that Ansible interprets or that it sets
-  itself, refuses an `outcome` that disagrees with `changed`, and refuses a
-  field without a validator. Those are programming errors and raise
-  `ValueError` or `TypeError` without chaining the handled error.
+- `fail_from` refuses an `outcome` that disagrees with `changed`, a
+  `changed` that is not a boolean and an empty `msg`. Those are programming
+  errors and raise `ValueError` or `TypeError` without chaining the handled
+  error.
+- A field the schema cannot publish is left out of the result: a key that is
+  not a string, a key in `RESERVED_RESULT_KEYS` or with the `_ansible_`
+  prefix, a key without a validator, or a value its validator rejects with
+  `ValueError` or `TypeError`. The category and code stay as validated, so
+  the module still ends with `changed`, `outcome` and the failure's own code.
+  A validator that raises anything else is a programming error and
+  propagates with its context and cause cleared, so it cannot chain the
+  handled error's text. Validators must keep their own exception text free
+  of sensitive values.
 - `merge_error_codes()` folds the `ERROR_CODES` mappings of the helpers into
   a product schema.
 

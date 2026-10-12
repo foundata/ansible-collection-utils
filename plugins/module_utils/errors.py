@@ -42,7 +42,7 @@ RESERVED_RESULT_KEYS = frozenset(
         "warnings",
     }
 )
-"""Exact result keys refused as extra fields; the _ansible_ prefix is also reserved."""
+"""Exact result keys fail_from leaves out of fields, as it does the _ansible_ prefix."""
 
 
 class FailsJson(Protocol):
@@ -154,11 +154,19 @@ def fail_from(
     Raises:
         TypeError: If ``error`` is no :class:`ApiError` or ``changed`` is no
             boolean.
-        ValueError: If ``msg`` is empty, ``outcome`` is not in
-            :data:`OUTCOMES` or disagrees with ``changed``, or a field key is
-            reserved, has no validator or fails it. These are programming
-            errors; they are raised from ``None`` so that the handled error's
-            text stays out of the chained traceback.
+        ValueError: If ``msg`` is empty or ``outcome`` is not in
+            :data:`OUTCOMES` or disagrees with ``changed``. These are
+            programming errors; they are raised from ``None`` so that the
+            handled error's text stays out of the chained traceback.
+
+    A field the schema cannot publish never raises: a key that is not a
+    string, a reserved key, a key without validator or a value its validator
+    rejects with ``ValueError`` or ``TypeError`` is left out of the result.
+    Such a field comes from the product or the caller, and a module must
+    still end with ``changed`` and ``outcome``. The category and code stay as
+    validated; only a pair the schema does not allow becomes the fallback.
+    Other validator exceptions propagate with their context and cause cleared.
+    Validators must keep their own exception text safe for publication.
     """
     if not isinstance(error, ApiError):
         raise TypeError("error must be an ApiError") from None
@@ -186,17 +194,24 @@ def fail_from(
 
     extra: dict[str, object] = {}
     for key, value in (fields or {}).items():
-        if key in RESERVED_RESULT_KEYS or key.startswith("_ansible_"):
-            raise ValueError(f"Result key {key!r} is reserved") from None
+        if (
+            not isinstance(key, str)
+            or key in RESERVED_RESULT_KEYS
+            or key.startswith("_ansible_")
+        ):
+            continue
         validator = schema.field_validators.get(key)
         if validator is None:
-            raise ValueError(
-                f"Result key {key!r} has no validator in the schema"
-            ) from None
+            continue
         try:
             extra[key] = validator(value)
         except (ValueError, TypeError):
-            raise ValueError(f"Result key {key!r} failed its validator") from None
+            continue
+        except Exception as validator_error:
+            # Core can inspect the exception chain even when display is suppressed.
+            validator_error.__context__ = None
+            validator_error.__cause__ = None
+            raise
 
     module.fail_json(
         msg=msg,
