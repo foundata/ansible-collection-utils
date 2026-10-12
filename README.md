@@ -65,9 +65,10 @@ interfaces. Names with a leading underscore are internal.
 | `http_client` | `HttpClient`, `HttpResponse`, `decode_json`, `http_argument_spec`, `ERROR_CODES`, `HTTP_METHODS`, `RESERVED_HEADERS`, `DEFAULT_TIMEOUT_SECONDS`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_BODY_BYTES` |
 | `exec`        | `Execution`, `TimeoutProfile`, `LocatorProfile`, `CommandResult`, `CommandError`, `CommandTimeout`, `RunsCommand`, `run_bounded`, `exec_argument_spec`, `ERROR_CODES`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_OUTPUT_BYTES` |
 
-Nothing is published yet; helpers and consumers change together. At first
-publication utils and its consumers are released together; thereafter public
-signatures, exceptions, defaults and fragment options are versioned interfaces.
+utils 1.0.0 is released together with its first consumers. From 1.0.0 on,
+public signatures, exceptions, defaults, error codes and fragment options
+are versioned interfaces: a change that breaks them needs a new major
+version.
 
 
 ### `errors`<a id="errors"></a>
@@ -228,11 +229,17 @@ What it guarantees:
   additions, an effective-environment validator, host and application UIDs,
   and a separate application identity command. Products validate executable
   paths, identifiers, prefixes and option boundaries before preparing it.
+  `Execution` is a frozen dataclass; build a variant, such as the same
+  locator with another command, with `dataclasses.replace`.
 - `module.run_command` receives an argument list, `encoding=None`,
   `binary_data=True`, `check_rc=False`, `handle_exceptions=False`,
   `use_unsafe_shell=False` and `expand_user_and_vars=False`. Literal `$HOME`,
   `${HOME}` and `~` stay literal. Stdin is bytes or `None`; empty bytes are
-  refused because core does not open a pipe for them.
+  refused because core does not open a pipe for them. With `None` the
+  command inherits the module process's standard input, which Ansible does
+  not define. A command or wrapper that reads or holds stdin, such as
+  `podman exec --interactive`, needs bytes or must not get the option. The
+  identity probe always runs with `None`.
 - A synchronous selector supervisor writes stdin without blocking, reads
   each stream under its own byte limit and checks the shared `Deadline`.
   Both streams are checked before decoding, parsing or returning them.
@@ -252,11 +259,19 @@ What it guarantees:
 - The supervisor sends TERM, then KILL when needed, to the wrapper's process
   group. It also cleans ordinary descendants after a parent exits. A
   cleanup intervention is a failure, even if the parent returned zero.
+  `descendant_cleanup` also reports output pipes that stay open after the
+  grace. Their holder may be outside the process group, for example in a
+  detached session, and may still run: the code says cleanup was needed, not
+  that it succeeded. A detached process that closed its pipes is not
+  detected at all.
   Cleanup waiting is bounded; process creation and uninterruptible kernel
   work are not hard real-time operations.
 - The environment validator sees the actual inherited environment, the
   module's `run_command_environ_update`, and the execution's additions,
-  including core's `PYTHONPATH` cleanup. An invalid working directory or
+  including core's `PYTHONPATH` cleanup. The layers apply in that order and
+  a later one wins: `os.environ`, then `run_command_environ_update`, then
+  `Execution.environment`; an addition can therefore blank an inherited
+  variable. An invalid working directory or
   environment fails before starting a command. No environment is silently
   removed; the product must document and enforce its inherited policy.
 - With `write=True`, the runner compares the host effective UID and then
@@ -624,7 +639,3 @@ Own and licensed trademarks used in this repository:
 
 This [project](https://foundata.com/en/projects/) was created and is maintained
 by [foundata](https://foundata.com/).
-
-Initially based on an
-[Ansible skeleton](https://foundata.com/en/projects/ansible-skeletons/)
-developed by [foundata](https://foundata.com/).

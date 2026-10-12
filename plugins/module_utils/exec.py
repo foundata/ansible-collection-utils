@@ -411,7 +411,8 @@ def run_bounded(
     ``write=True`` verifies both identities before starting the command. The
     product still tracks writes across parsing and read-back, and reports an
     interrupted write as changed=True/outcome=unknown through fail_from.
-    Empty stdin is refused because core does not open a pipe for b"".
+    Empty stdin is refused because core does not open a pipe for b"";
+    with ``None`` the command inherits the module process's standard input.
     Nonzero statuses, including 124/137, are returned to the product parser.
     """
     if stdin is not None and not isinstance(stdin, bytes):
