@@ -11,6 +11,7 @@ import pytest
 
 from ansible_collections.foundata.utils.plugins.module_utils.deadline import (
     ERROR_CODES,
+    MAX_SECONDS,
     Deadline,
 )
 from ansible_collections.foundata.utils.plugins.module_utils.errors import (
@@ -35,9 +36,28 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
 
 
 @pytest.mark.parametrize(
-    "seconds", [0, -1, 0.0, -0.5, math.inf, -math.inf, math.nan, True, "5", None, b"5"]
+    "seconds",
+    [
+        0,
+        -1,
+        0.0,
+        -0.5,
+        math.inf,
+        -math.inf,
+        math.nan,
+        True,
+        "5",
+        None,
+        b"5",
+        MAX_SECONDS + 1,
+        MAX_SECONDS + 0.5,
+        10**10,
+        10**400,
+        -(10**400),
+        1e300,
+    ],
 )
-def test_rejects_non_positive_or_non_finite_budget(seconds: object) -> None:
+def test_rejects_non_positive_non_finite_or_unbounded_budget(seconds: object) -> None:
     with pytest.raises(ApiError) as excinfo:
         Deadline(seconds)  # type: ignore[arg-type]
     assert (excinfo.value.category, excinfo.value.code) == (
@@ -72,6 +92,7 @@ def test_exhausted_budget_raises_transport_timeout_every_time(clock: FakeClock) 
 def test_integer_and_float_budgets_are_accepted(clock: FakeClock) -> None:
     assert Deadline(1).remaining() == pytest.approx(1.0)
     assert Deadline(0.25).remaining() == pytest.approx(0.25)
+    assert Deadline(MAX_SECONDS).remaining() == pytest.approx(MAX_SECONDS)
 
 
 def test_repr_names_the_budget_only() -> None:

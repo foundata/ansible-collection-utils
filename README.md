@@ -61,7 +61,7 @@ interfaces. Names with a leading underscore are internal.
 |    Module     | Supported symbols |
 | ------------- | ----------------- |
 | `errors`      | `ApiError`, `TransportTimeout`, `ErrorSchema`, `FailsJson`, `fail_from`, `merge_error_codes`, `OUTCOMES`, `RESERVED_RESULT_KEYS` |
-| `deadline`    | `Deadline`, `ERROR_CODES` |
+| `deadline`    | `Deadline`, `ERROR_CODES`, `MAX_SECONDS` |
 | `http_client` | `HttpClient`, `HttpResponse`, `decode_json`, `http_argument_spec`, `ERROR_CODES`, `HTTP_METHODS`, `RESERVED_HEADERS`, `DEFAULT_TIMEOUT_SECONDS`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_BODY_BYTES` |
 | `exec`        | `Execution`, `TimeoutProfile`, `LocatorProfile`, `CommandResult`, `CommandError`, `CommandTimeout`, `RunsCommand`, `run_bounded`, `exec_argument_spec`, `ERROR_CODES`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_OUTPUT_BYTES` |
 
@@ -117,9 +117,11 @@ What it guarantees:
 - `Deadline(seconds)` starts a budget when created. `remaining()` returns
   the seconds left and raises `TransportTimeout` with code
   `deadline_exceeded` once the budget is exhausted, on every later call too.
-- A non-positive, non-finite or non-numeric budget raises `ApiError` with
+- A non-positive, non-finite or non-numeric budget, or one above
+  `MAX_SECONDS` (10^9 seconds, about 31 years), raises `ApiError` with
   category `argument` and code `invalid_deadline`, so a bad module option
-  fails like any other expected failure.
+  fails like any other expected failure. The bound keeps every derived
+  socket, selector and wrapper timeout representable.
 - A transport never resets a deadline. The caller shares one deadline across
   retries, polling, read-back and command execution.
 
@@ -148,7 +150,8 @@ What it guarantees:
 - The request stays within the endpoint: the path must be absolute, without
   dot segments, a fragment, a backslash, whitespace or control characters,
   and the resulting URL must keep the endpoint's origin and path prefix. A
-  base URL with credentials, a query or a fragment is refused.
+  base URL with credentials, a query or a fragment is refused, and so is a
+  host that IDNA cannot encode, such as one with an empty label.
 - Certificates are validated by default; `ca_path` adds a private authority
   and must name an existing regular file; failures loading it are translated
   locally. `validate_certs=False` is never chosen automatically.
@@ -157,8 +160,14 @@ What it guarantees:
   `identity` content encoding is requested and accepted; a compressed
   response is refused. Products cannot set `Accept-Encoding`, `User-Agent`,
   `Host`, `Content-Length`, `Transfer-Encoding` or `Connection`.
+- A header value may hold tabs and printable ASCII only. Anything else,
+  such as a line break or a non-ASCII character in a credential from a
+  module option, raises `ApiError` with category `argument` and code
+  `invalid_header` before any request, without the value. An invalid or
+  reserved header name stays a programming error and raises `ValueError`.
 - The socket inactivity timeout is the smaller of `timeout` and the
-  remaining deadline. The body is read with `read1`, with a budget check
+  remaining deadline; `timeout` must be positive and at most
+  `deadline.MAX_SECONDS`. The body is read with `read1`, with a budget check
   before and after every read and a byte limit. A declared `Content-Length`
   beyond the limit is refused before the first read; a body shorter than its
   declared length is a protocol failure, not a truncated success.
@@ -171,7 +180,7 @@ What it guarantees:
   allowlisted diagnostic.
 - Failures become `ApiError` with the categories and codes in
   `http_client.ERROR_CODES`: `argument` (`invalid_url`, `invalid_timeout`,
-  `invalid_ca_path`), `request` (`invalid_path`), `response`
+  `invalid_ca_path`, `invalid_header`), `request` (`invalid_path`), `response`
   (`body_too_large`, `content_encoding`, `invalid_utf8`, `invalid_json`),
   `transport` (`connection_failed`,
   `tls_validation`, `io_error`, `http_protocol`) and `timeout`
@@ -316,7 +325,7 @@ Merge the used helpers' `ERROR_CODES` with the product schema through
 
 |  Category   | Codes |
 | ----------- | ----- |
-| `argument`  | `invalid_ca_path`, `invalid_deadline`, `invalid_environment`, `invalid_execution`, `invalid_locator`, `invalid_timeout`, `invalid_url` |
+| `argument`  | `invalid_ca_path`, `invalid_deadline`, `invalid_environment`, `invalid_execution`, `invalid_header`, `invalid_locator`, `invalid_timeout`, `invalid_url` |
 | `identity`  | `host_identity`, `target_identity` |
 | `request`   | `invalid_path` |
 | `response`  | `body_too_large`, `content_encoding`, `invalid_command_result`, `invalid_json`, `invalid_utf8`, `output_too_large` |

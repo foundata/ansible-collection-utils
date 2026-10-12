@@ -125,6 +125,10 @@ def respond(
         "",
         None,
         42,
+        "http://zammad..example.invalid",
+        "http://" + "a" * 64 + ".example.invalid",
+        "https://.example.invalid",
+        "https://:8443/api",
     ],
 )
 def test_invalid_base_url_is_an_argument_error(base_url: Any) -> None:
@@ -134,6 +138,20 @@ def test_invalid_base_url_is_an_argument_error(base_url: Any) -> None:
     assert SECRET not in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:8080",
+        "https://[::1]:8443/api",
+        "https://xn--bcher-kva.example/api",
+        "https://b\u00fccher.example",
+        "https://host.example.",
+    ],
+)
+def test_encodable_hosts_are_accepted(base_url: str) -> None:
+    assert HttpClient(base_url, user_agent=AGENT).base_url == base_url.rstrip("/")
+
+
 def test_base_url_is_normalized_and_kept_out_of_nothing_else() -> None:
     client = HttpClient("https://host:8443/api/", user_agent=AGENT)
     assert client.base_url == "https://host:8443/api"
@@ -141,7 +159,20 @@ def test_base_url_is_normalized_and_kept_out_of_nothing_else() -> None:
 
 
 @pytest.mark.parametrize(
-    "timeout", [0, -1, True, float("inf"), float("nan"), "5", None]
+    "timeout",
+    [
+        0,
+        -1,
+        True,
+        float("inf"),
+        float("nan"),
+        "5",
+        None,
+        10**9 + 1,
+        10**10,
+        10**400,
+        -(10**400),
+    ],
 )
 def test_invalid_timeout_is_an_argument_error(timeout: Any) -> None:
     with pytest.raises(ApiError) as excinfo:
@@ -217,17 +248,61 @@ def test_path_that_leaves_the_endpoint_is_rejected(
         ("Connection", "keep-alive"),
         ("X-Bad Name", "x"),
         ("", "x"),
-        ("X-Injected", "a\r\nX-Other: b"),
-        ("X-Nonascii", "ä"),
     ],
 )
-def test_reserved_or_malformed_headers_are_rejected(
+def test_reserved_or_malformed_header_names_are_rejected(
     monkeypatch: pytest.MonkeyPatch, name: str, value: str
 ) -> None:
     monkeypatch.setattr(http_module, "open_url", pytest.fail)
     client = HttpClient("https://host", user_agent=AGENT)
     with pytest.raises(ValueError):
         client.request("GET", "/", deadline=Deadline(5), headers={name: value})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a\r\nX-Other: b",
+        "Bearer " + SECRET + "\u00e9",
+        "Bearer " + SECRET + "\n",
+        "x\x00y",
+        "x\x7f",
+        "\u2028",
+    ],
+)
+def test_header_value_outside_printable_ascii_is_an_argument_error(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    # Header values often carry a credential from a module option, so the
+    # refusal is an expected failure and never names the value.
+    monkeypatch.setattr(http_module, "open_url", pytest.fail)
+    client = HttpClient("https://host", user_agent=AGENT)
+    with pytest.raises(ApiError) as excinfo:
+        client.request(
+            "GET", "/", deadline=Deadline(5), headers={"Authorization": value}
+        )
+    assert (excinfo.value.category, excinfo.value.code) == (
+        "argument",
+        "invalid_header",
+    )
+    assert SECRET not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+
+
+def test_tab_and_printable_ascii_header_values_are_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def opener(url: str, **kwargs: Any) -> FakeResponse:
+        seen.update(kwargs["headers"])
+        return FakeResponse(200, b"")
+
+    monkeypatch.setattr(http_module, "open_url", opener)
+    HttpClient("https://host", user_agent=AGENT).request(
+        "GET", "/", deadline=Deadline(5), headers={"X-Value": "a\tb ~!"}
+    )
+    assert seen["X-Value"] == "a\tb ~!"
 
 
 def test_non_str_headers_and_bad_body_types_are_rejected(

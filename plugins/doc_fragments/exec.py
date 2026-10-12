@@ -15,7 +15,7 @@ requirements:
 options:
   deadline:
     description:
-      - "Positive elapsed-time budget in seconds shared by identity checks, commands and read-back."
+      - "Positive elapsed-time budget in seconds shared by identity checks, commands and read-back, at most V(1000000000)."
       - "Process cleanup has a separate, profile-defined grace period. Interrupted writes have an unknown outcome."
     type: int
     default: 120

@@ -12,6 +12,14 @@ from ansible_collections.foundata.utils.plugins.module_utils.errors import (
     TransportTimeout,
 )
 
+MAX_SECONDS = 10**9
+"""Largest budget or timeout in seconds, about 31 years.
+
+Every socket, selector and wrapper timeout derived from it stays representable
+on the supported platforms; Python's socket timeouts end near 9.2e9 seconds
+and a 32-bit ``time_t`` near 2.1e9.
+"""
+
 ERROR_CODES: dict[str, frozenset[str]] = {
     "argument": frozenset({"invalid_deadline"}),
     "timeout": frozenset({"deadline_exceeded"}),
@@ -36,18 +44,23 @@ class Deadline:
 
         Raises:
             ApiError: With category ``argument`` and code ``invalid_deadline``
-                unless ``seconds`` is a positive, finite number. The value
-                usually comes from a module option, so the module boundary
-                reports it like any other expected failure.
+                unless ``seconds`` is a positive, finite number of at most
+                :data:`MAX_SECONDS`. The value usually comes from a module
+                option, so the module boundary reports it like any other
+                expected failure.
         """
+        # The comparisons come before math.isfinite, which cannot convert an
+        # integer beyond the float range.
         if (
             isinstance(seconds, bool)
             or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds)
             or seconds <= 0
+            or seconds > MAX_SECONDS
+            or not math.isfinite(seconds)
         ):
             raise ApiError(
-                "The deadline must be a positive, finite number of seconds",
+                "The deadline must be a positive number of at most "
+                f"{MAX_SECONDS} seconds",
                 category="argument",
                 code="invalid_deadline",
             )

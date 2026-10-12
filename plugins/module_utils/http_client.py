@@ -28,7 +28,10 @@ from urllib.parse import unquote, urlsplit
 from ansible.module_utils.urls import ConnectionError as UrlConnectionError
 from ansible.module_utils.urls import SSLValidationError, open_url
 
-from ansible_collections.foundata.utils.plugins.module_utils.deadline import Deadline
+from ansible_collections.foundata.utils.plugins.module_utils.deadline import (
+    MAX_SECONDS,
+    Deadline,
+)
 from ansible_collections.foundata.utils.plugins.module_utils.errors import (
     ApiError,
     TransportTimeout,
@@ -50,7 +53,9 @@ RESERVED_HEADERS = frozenset(
 """Header names a product may not set; the transport or ``urllib`` owns them."""
 
 ERROR_CODES: dict[str, frozenset[str]] = {
-    "argument": frozenset({"invalid_ca_path", "invalid_timeout", "invalid_url"}),
+    "argument": frozenset(
+        {"invalid_ca_path", "invalid_header", "invalid_timeout", "invalid_url"}
+    ),
     "request": frozenset({"invalid_path"}),
     "response": frozenset(
         {"body_too_large", "content_encoding", "invalid_json", "invalid_utf8"}
@@ -113,23 +118,30 @@ class HttpClient:
 
         Raises:
             ApiError: With category ``argument`` when ``base_url``,
-                ``timeout`` or ``ca_path`` is invalid. These values usually
-                come from module options, so the module boundary reports them
-                like any other expected failure.
+                ``timeout`` or ``ca_path`` is invalid. A host that IDNA cannot
+                encode, such as one with an empty label, makes the URL
+                invalid; ``timeout`` must be positive, finite and at most
+                :data:`deadline.MAX_SECONDS`. These values usually come from
+                module options, so the module boundary reports them like any
+                other expected failure.
             ValueError: When ``user_agent`` or ``max_body_bytes`` is invalid;
                 these come from the product's code.
         """
         self._base_url, self._base_path = _parse_base_url(base_url)
         if not isinstance(user_agent, str) or not user_agent.strip():
             raise ValueError("user_agent must be a non-empty string")
+        # The comparisons come before math.isfinite, which cannot convert an
+        # integer beyond the float range.
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout)
             or timeout <= 0
+            or timeout > MAX_SECONDS
+            or not math.isfinite(timeout)
         ):
             raise ApiError(
-                "The socket timeout must be a positive, finite number of seconds",
+                "The socket timeout must be a positive number of at most "
+                f"{MAX_SECONDS} seconds",
                 category="argument",
                 code="invalid_timeout",
             )
@@ -175,14 +187,17 @@ class HttpClient:
         may carry any HTTP status.
 
         Raises:
-            ApiError: With category ``request`` when the path leaves the
-                endpoint, ``response`` when the body is too large or encoded,
-                and ``transport`` when the connection, TLS validation, I/O or
-                the HTTP protocol fails.
+            ApiError: With category ``argument`` and code ``invalid_header``
+                before any request when a header value holds a character
+                other than a tab or printable ASCII; header values often carry
+                credentials from module options. With category ``request``
+                when the path leaves the endpoint, ``response`` when the body
+                is too large or encoded, and ``transport`` when the
+                connection, TLS validation, I/O or the HTTP protocol fails.
             TransportTimeout: When the socket times out or the deadline is
                 exhausted before or after a read.
-            ValueError: When ``method`` or a header is invalid; these come
-                from the product's code.
+            ValueError: When ``method`` or a header name is invalid or
+                reserved; these come from the product's code.
             TypeError: When ``body`` is neither bytes nor ``None``.
         """
         if method not in HTTP_METHODS:
@@ -401,12 +416,18 @@ def _parse_base_url(base_url: str) -> tuple[str, str]:
     """Return the normalized base URL and its path prefix."""
     try:
         parts = urlsplit(base_url) if isinstance(base_url, str) else None
-    except ValueError:
-        parts = None
+        hostname = parts.hostname if parts is not None else None
+        # getaddrinfo would refuse such a host later with an untranslated
+        # UnicodeError, for example an empty or overlong label.
+        if hostname:
+            hostname.encode("idna")
+    except (UnicodeError, ValueError):
+        parts, hostname = None, None
     if (
         parts is None
         or parts.scheme not in ("http", "https")
         or not parts.netloc
+        or not hostname
         or "@" in parts.netloc
         or parts.query
         or parts.fragment
@@ -438,10 +459,12 @@ def _checked_headers(headers: Mapping[str, str]) -> dict[str, str]:
             raise TypeError("Header names and values must be str")
         if not _HEADER_NAME.fullmatch(name):
             raise ValueError("Invalid HTTP header name")
-        if not _HEADER_VALUE.fullmatch(value):
-            raise ValueError(f"Invalid value for HTTP header {name!r}")
         if name.lower() in RESERVED_HEADERS:
             raise ValueError(f"HTTP header {name!r} is owned by the transport")
+        if not _HEADER_VALUE.fullmatch(value):
+            raise ApiError(
+                "Invalid HTTP header value", category="argument", code="invalid_header"
+            )
         checked[name] = value
     return checked
 

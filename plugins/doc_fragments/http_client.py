@@ -14,7 +14,7 @@ options:
   url:
     description:
       - "Base URL of the product's API endpoint, including the scheme and any path prefix, for example V(https://firewall.example.com/api)."
-      - "Must not contain credentials, a query string or a fragment."
+      - "Must not contain credentials, a query string or a fragment. The host must be a name IDNA can encode or an IP address."
     type: str
     required: true
   validate_certs:
@@ -36,7 +36,7 @@ options:
   timeout:
     description:
       - "Socket inactivity timeout in seconds, applied to connecting and to each read. It is never longer than the remaining O(deadline)."
-      - "Must be greater than zero."
+      - "Must be greater than zero and at most V(1000000000)."
     type: int
     default: 30
   deadline:
@@ -46,7 +46,7 @@ options:
         The budget is cooperative, not a hard kill. DNS resolution, a response header that arrives slowly and a
         slow proxy are outside the socket timeout and can exceed it. A stalled body read can exceed it by up to
         one O(timeout).
-      - "Must be greater than zero."
+      - "Must be greater than zero and at most V(1000000000)."
     type: int
     default: 120
 """

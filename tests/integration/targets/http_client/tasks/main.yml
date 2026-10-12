@@ -160,6 +160,36 @@
       ignore_errors: true
       register: __http_client_bad_deadline
 
+    - name: "Request with a credential that holds a line break"
+      http_probe:
+        url: "{{ __http_client_url }}"
+        path: "/ok"
+        token: "SYNTHETIC-SECRET-integration-9c4d\nX-Injected: 1"
+        deadline: 10
+      ignore_errors: true
+      register: __http_client_bad_token
+
+    - name: "Request an endpoint whose host has an empty label"
+      http_probe:
+        url: "http://zammad..example.invalid"
+        path: "/ok"
+        deadline: 10
+      ignore_errors: true
+      register: __http_client_bad_host
+
+    - name: "Verify the option values fail as argument errors before any request"
+      ansible.builtin.assert:
+        that:
+          - "__http_client_bad_token is ansible.builtin.failed"
+          - "__http_client_bad_token is not ansible.builtin.changed"
+          - "__http_client_bad_token['outcome'] == 'unchanged'"
+          - "__http_client_bad_token['error_category'] == 'argument'"
+          - "__http_client_bad_token['error_code'] == 'invalid_header'"
+          - "'SYNTHETIC-SECRET' not in (__http_client_bad_token | ansible.builtin.to_json)"
+          - "__http_client_bad_host['outcome'] == 'unchanged'"
+          - "__http_client_bad_host['error_category'] == 'argument'"
+          - "__http_client_bad_host['error_code'] == 'invalid_url'"
+
     - name: "Verify the failures carry safe shared codes"
       ansible.builtin.assert:
         that:
