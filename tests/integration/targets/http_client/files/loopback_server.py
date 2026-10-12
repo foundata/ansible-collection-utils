@@ -18,6 +18,11 @@ import sys
 import threading
 import time
 
+# Accepted creations per item name; the creation reply lies about its length.
+ITEMS: dict[str, int] = {}
+ITEMS_LOCK = threading.Lock()
+OVERLONG_LENGTH = "1" + "0" * 4300
+
 
 def response(
     status: int, body: bytes = b"", headers: dict[str, str] | None = None
@@ -46,7 +51,29 @@ def handle(conn: socket.socket) -> None:
         for line in head.split(b"\r\n")[1:]:
             if line.lower().startswith(b"authorization:"):
                 authorization = line.split(b":", 1)[1].strip().decode("latin-1")
-        if path == "/ok":
+        if path.startswith("/items/"):
+            parts = path.split("/")
+            name = parts[2]
+            if method == "POST" and len(parts) == 3:
+                with ITEMS_LOCK:
+                    ITEMS[name] = ITEMS.get(name, 0) + 1
+                # The write is stored; only the reply's framing is broken.
+                conn.sendall(
+                    b"HTTP/1.1 201 Created\r\nContent-Length: "
+                    + OVERLONG_LENGTH.encode("ascii")
+                    + b"\r\nConnection: close\r\n\r\n"
+                    + f'{{"name": "{name}"}}'.encode()
+                )
+            elif method == "GET" and parts[3:] == ["state"]:
+                with ITEMS_LOCK:
+                    writes = ITEMS.get(name, 0)
+                body = f'{{"present": {str(writes > 0).lower()}, "writes": {writes}}}'
+                conn.sendall(
+                    response(200, body.encode(), {"Content-Type": "application/json"})
+                )
+            else:
+                conn.sendall(response(503, b'{"error": "unavailable"}'))
+        elif path == "/ok":
             body = f'{{"method": "{method}", "target": "{target}", "authenticated": {str(bool(authorization)).lower()}}}'
             conn.sendall(
                 response(200, body.encode(), {"Content-Type": "application/json"})

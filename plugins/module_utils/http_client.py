@@ -323,27 +323,49 @@ class HttpClient:
         """Read the body with ``read1`` under the deadline and the byte limit.
 
         A declared ``Content-Length`` beyond the limit is refused before the
-        first read; a body shorter than its declared length is a protocol
-        failure, because ``read1`` reports a closed connection as the end.
-        HEAD and 304 carry no body; their length describes a representation.
+        first read; a malformed one and a body shorter than its declared length
+        are protocol failures, because ``read1`` reports a closed connection
+        as the end. Length-framed reads stop at the declared count and refuse
+        buffered surplus. HEAD, 1xx, 204 and 304 have no body to check.
         """
-        if method == "HEAD" or response.code == 304:
+        if (
+            method == "HEAD"
+            or response.code in (204, 304)
+            or 100 <= response.code < 200
+        ):
             deadline.remaining()
             return b""
         if getattr(response, "fp", None) is None:
             return b""
-        declared = _declared_length(raw_headers)
+        declared = _declared_length(raw_headers, self._max_body_bytes)
+        # Transfer coding owns framing, even if a length is also present.
+        if getattr(response, "chunked", False):
+            declared = None
         if declared is not None and declared > self._max_body_bytes:
             raise ApiError(
                 "Response exceeds the size limit",
                 category="response",
                 code="body_too_large",
             )
+        deadline.remaining()
         chunks: list[bytes] = []
         size = 0
-        while True:
+        while declared is None or size < declared:
             deadline.remaining()
-            chunk = response.read1(min(_READ_SIZE, self._max_body_bytes + 1 - size))
+            allowance = self._max_body_bytes + 1 - size
+            if declared is not None:
+                allowance = min(allowance, declared - size)
+                # HTTPResponse discards its buffer at the declared boundary.
+                # Inspect it first so an already buffered surplus is not hidden.
+                peek = getattr(response, "peek", None)
+                if peek is not None and len(peek(1)) > declared - size:
+                    raise ApiError(
+                        "Surplus HTTP response body",
+                        category="transport",
+                        code="http_protocol",
+                    )
+                deadline.remaining()
+            chunk = response.read1(min(_READ_SIZE, allowance))
             deadline.remaining()
             if not chunk:
                 break
@@ -443,12 +465,37 @@ def _parse_base_url(base_url: str) -> tuple[str, str]:
     return f"{parts.scheme}://{parts.netloc}{base_path}", base_path
 
 
-def _declared_length(raw_headers: Any) -> int | None:
-    """Return the declared ``Content-Length`` when it is a plain number."""
-    value = raw_headers.get("Content-Length") if raw_headers else None
-    if value is None or not str(value).strip().isdigit():
+def _declared_length(raw_headers: Any, limit: int) -> int | None:
+    """Return the declared ``Content-Length``, or ``None`` when there is none.
+
+    Only ASCII digits form a length (``1*DIGIT``, RFC 9110 section 8.6).
+    ``http.client`` frames the body with ``int()``, which also accepts a sign,
+    underscores and other decimal digits, so any other present value is a
+    framing failure, not an absent header (RFC 9112 section 6.3). A value with
+    more digits than ``limit``, including leading zeros, is a framing failure
+    before conversion. This keeps validation consistent with the HTTP reader's
+    integer conversion limit.
+    """
+    values = raw_headers.get_all("Content-Length", []) if raw_headers else []
+    if not values:
         return None
-    return int(str(value).strip())
+    if len(values) != 1:
+        raise ApiError(
+            "Repeated Content-Length", category="transport", code="http_protocol"
+        )
+    value = values[0]
+    text = str(value).strip(" \t")
+    if not text or not (text.isascii() and text.isdigit()):
+        raise ApiError(
+            "Invalid Content-Length", category="transport", code="http_protocol"
+        )
+    if len(text) > len(str(limit)):
+        raise ApiError(
+            "Overlong Content-Length",
+            category="transport",
+            code="http_protocol",
+        )
+    return int(text)
 
 
 def _checked_headers(headers: Mapping[str, str]) -> dict[str, str]:

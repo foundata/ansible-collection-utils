@@ -37,6 +37,13 @@ options:
     description: "Byte limit of the response body."
     type: int
     default: 4194304
+  reconcile_path:
+    description:
+      - >-
+        Path of a state read that settles a write whose request raised, as a product reconciles by identity.
+        The read returns C({"present": true}) once the write took effect.
+      - "Only used for methods other than C(GET) and C(HEAD). Without it the probe reports every failure as unchanged."
+    type: str
 extends_documentation_fragment:
   - foundata.utils.http_client
 """
@@ -70,6 +77,14 @@ elapsed:
   description: Seconds the request took.
   returned: always
   type: float
+reconciled:
+  description: Whether the state read after a failed write found the write's effect.
+  returned: success after a failed write with O(reconcile_path)
+  type: bool
+write_error_code:
+  description: The shared error code of the write whose effect the state read established.
+  returned: success after a failed write with O(reconcile_path)
+  type: str
 """
 
 import time
@@ -91,6 +106,7 @@ from ansible_collections.foundata.utils.plugins.module_utils.errors import (
 )
 from ansible_collections.foundata.utils.plugins.module_utils.http_client import (
     HttpClient,
+    decode_json,
 )
 
 
@@ -117,6 +133,22 @@ SCHEMA = ErrorSchema(
 )
 
 
+def _reconcile(
+    client: HttpClient, deadline: Deadline, path: str, headers: dict[str, str]
+) -> bool | None:
+    """Return whether the write took effect, or ``None`` when that is unknown."""
+    try:
+        response = client.request("GET", path, deadline=deadline, headers=headers)
+        if response.status != 200:
+            return None
+        document = decode_json(response.body)
+    except ApiError:
+        return None
+    if not isinstance(document, dict) or not isinstance(document.get("present"), bool):
+        return None
+    return document["present"]
+
+
 def main() -> None:
     spec = http_util.http_argument_spec()
     spec.update(
@@ -130,6 +162,7 @@ def main() -> None:
             "token": {"type": "str", "no_log": True},
             "return_body": {"type": "bool", "default": False},
             "max_body_bytes": {"type": "int", "default": 4 * 1024 * 1024},
+            "reconcile_path": {"type": "str"},
         }
     )
     module = AnsibleModule(argument_spec=spec, supports_check_mode=True)
@@ -138,6 +171,14 @@ def main() -> None:
     if params["token"]:
         headers["Authorization"] = f"Bearer {params['token']}"
     started = time.monotonic()
+    # A write counts as attempted once its request is sent; only a state read
+    # by identity can tell what it did.
+    attempted = bool(params["reconcile_path"]) and params["method"] not in (
+        "GET",
+        "HEAD",
+    )
+    client: HttpClient | None = None
+    deadline: Deadline | None = None
     try:
         client = HttpClient(
             params["url"],
@@ -153,13 +194,23 @@ def main() -> None:
             params["method"], params["path"], deadline=deadline, headers=headers
         )
     except ApiError as error:
+        present = None
+        if attempted and client is not None and deadline is not None:
+            present = _reconcile(client, deadline, params["reconcile_path"], headers)
+        if present:
+            module.exit_json(
+                changed=True,
+                reconciled=True,
+                write_error_code=error.code,
+                elapsed=time.monotonic() - started,
+            )
         fail_from(
             module,
             error,
             schema=SCHEMA,
             msg="The probe request failed",
-            changed=False,
-            outcome="unchanged",
+            changed=attempted and present is None,
+            outcome="unknown" if attempted and present is None else "unchanged",
             fields={"path": params["path"], "elapsed": time.monotonic() - started},
         )
     result = {

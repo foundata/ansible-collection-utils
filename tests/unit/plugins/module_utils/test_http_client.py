@@ -362,7 +362,9 @@ class FakeResponse(io.BytesIO):
     ) -> None:
         super().__init__(body)
         self.code = status
-        self.headers = headers or {}
+        self.headers = Message()
+        for name, value in (headers or {}).items():
+            self.headers[name] = value
         self.fp = self
         self.closed_count = 0
 
@@ -1164,6 +1166,280 @@ def test_declared_oversize_never_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.closed_count == 1
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        ["3", "3"],
+        ["3", "10"],
+        ["10", "3"],
+        ["3", "+10"],
+        ["+10", "3"],
+        ["3", "5000"],
+        ["5000", "3"],
+        ["3, 3"],
+    ],
+)
+def test_repeated_lengths_never_read(
+    monkeypatch: pytest.MonkeyPatch, values: list[str]
+) -> None:
+    response = FakeResponse(200, b"abc")
+    for value in values:
+        response.headers["Content-Length"] = value
+
+    def unexpected_read(size: int) -> bytes:
+        pytest.fail("Repeated lengths must fail before reading")
+
+    monkeypatch.setattr(response, "read1", unexpected_read)
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    with pytest.raises(ApiError) as caught:
+        HttpClient("https://host", user_agent=AGENT).request(
+            "GET", "/", deadline=Deadline(5), headers={}
+        )
+    assert (caught.value.category, caught.value.code) == ("transport", "http_protocol")
+    assert response.closed_count == 1
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ["3"],
+        ["3", "3"],
+        ["3", "10"],
+        ["10", "3"],
+        ["3", "+10"],
+        ["+10", "3"],
+        ["3", "5000"],
+        ["5000", "3"],
+        ["3, 3"],
+    ],
+)
+def test_wire_repeated_lengths(
+    server: Callable[..., LoopbackServer], values: list[str]
+) -> None:
+    def handler(conn: socket.socket, request: bytes) -> None:
+        lengths = "".join(f"Content-Length: {value}\r\n" for value in values)
+        send_all(conn, ("HTTP/1.1 200 OK\r\n" + lengths + "\r\nabc").encode("ascii"))
+
+    instance = server(handler)
+    client = client_for(instance, max_body_bytes=100)
+    if len(values) == 1 and "," not in values[0]:
+        assert (
+            client.request("GET", "/", deadline=Deadline(5), headers={}).body == b"abc"
+        )
+    else:
+        with pytest.raises(ApiError) as caught:
+            client.request("GET", "/", deadline=Deadline(5), headers={})
+        assert (caught.value.category, caught.value.code) == (
+            "transport",
+            "http_protocol",
+        )
+    assert instance.wait_closed()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "+10",
+        "1_0",
+        "\u00b2",
+        "\u0661\u0660",
+        "-1",
+        "1 0",
+        "0x10",
+        "1e3",
+        "10, 10",
+        "",
+        " ",
+    ],
+)
+def test_invalid_length_is_a_protocol_failure_before_reading(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    # http.client frames "+10" and "1_0" as ten bytes with int(); treating them
+    # as absent let a three-byte body pass as complete.
+    response = FakeResponse(200, b"abc", {"Content-Length": value})
+
+    def unexpected_read(size: int) -> bytes:
+        pytest.fail("A malformed length must be refused before the first read")
+
+    monkeypatch.setattr(response, "read1", unexpected_read)
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    with pytest.raises(ApiError) as caught:
+        HttpClient("https://host", user_agent=AGENT).request(
+            "GET", "/", deadline=Deadline(5), headers={}
+        )
+    assert (caught.value.category, caught.value.code) == ("transport", "http_protocol")
+    assert response.closed_count == 1
+
+
+@pytest.mark.parametrize("digits", [8, 4301, 5000, 100000])
+def test_overlong_length_is_a_protocol_failure_without_integer_conversion(
+    monkeypatch: pytest.MonkeyPatch, digits: int
+) -> None:
+    # More digits than Python converts (4300) used to escape as ValueError
+    # after an accepted write.
+    response = FakeResponse(200, b"abc", {"Content-Length": "1" + "0" * (digits - 1)})
+
+    def unexpected_read(size: int) -> bytes:
+        pytest.fail("A declared oversize must be refused before the first read")
+
+    monkeypatch.setattr(response, "read1", unexpected_read)
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    with pytest.raises(ApiError) as caught:
+        HttpClient("https://host", user_agent=AGENT).request(
+            "POST", "/", deadline=Deadline(5), headers={}, body=b"{}"
+        )
+    assert (caught.value.category, caught.value.code) == ("transport", "http_protocol")
+    assert response.closed_count == 1
+
+
+@pytest.mark.parametrize("value", ["0000", "00009", "0" * 5000, "0" * 5000 + "3"])
+def test_overlong_padded_length_never_reads(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    response = FakeResponse(200, b"abc", {"Content-Length": value})
+
+    def unexpected_read(size: int) -> bytes:
+        pytest.fail("Overlong literals must fail before reading")
+
+    monkeypatch.setattr(response, "read1", unexpected_read)
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    with pytest.raises(ApiError) as caught:
+        HttpClient("https://host", user_agent=AGENT, max_body_bytes=100).request(
+            "GET", "/", deadline=Deadline(5), headers={}
+        )
+    assert (caught.value.category, caught.value.code) == ("transport", "http_protocol")
+    assert response.closed_count == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "body", "code"),
+    [
+        ("003", b"abc", None),
+        ("03", b"abc", None),
+        ("000", b"", None),
+        ("003", b"abcdef", "http_protocol"),
+        ("003", b"ab", "http_protocol"),
+        ("0" * 5000 + "3", b"abc", "http_protocol"),
+        ("100", b"x" * 100, None),
+        ("101", b"x" * 101, "body_too_large"),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 400])
+def test_wire_padded_lengths(
+    server: Callable[..., LoopbackServer],
+    value: str,
+    body: bytes,
+    code: str | None,
+    status: int,
+) -> None:
+    def handler(conn: socket.socket, request: bytes) -> None:
+        send_all(
+            conn,
+            (f"HTTP/1.1 {status} Probe\r\nContent-Length: {value}\r\n\r\n").encode(
+                "ascii"
+            )
+            + body,
+        )
+        if len(body) < 3 and body:
+            conn.shutdown(socket.SHUT_WR)
+
+    instance = server(handler)
+    client = client_for(instance, max_body_bytes=100, timeout=0.25)
+    if code:
+        with pytest.raises(ApiError) as caught:
+            client.request("GET", "/", deadline=Deadline(1), headers={})
+        assert caught.value.code == code
+    else:
+        response = client.request("GET", "/", deadline=Deadline(1), headers={})
+        assert response.body == body
+    assert instance.wait_closed()
+
+
+def test_chunk_framing_overrides_a_valid_length(
+    server: Callable[..., LoopbackServer],
+) -> None:
+    def handler(conn: socket.socket, request: bytes) -> None:
+        send_all(
+            conn,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+            b"Content-Length: 003\r\n\r\n6\r\nabcdef\r\n0\r\n\r\n",
+        )
+
+    instance = server(handler)
+    response = client_for(instance, max_body_bytes=100).request(
+        "GET", "/", deadline=Deadline(5), headers={}
+    )
+    assert response.body == b"abcdef"
+    assert instance.wait_closed()
+
+
+@pytest.mark.parametrize(
+    ("value", "body", "limit"),
+    [
+        ("003", b"abc", 100),
+        ("0", b"", 8),
+        ("000", b"", 100),
+        ("8", b"12345678", 8),
+        ("008", b"12345678", 100),
+        (" 8\t", b"12345678", 8),
+        ("4194304", b"x" * 4194304, 4194304),
+    ],
+)
+def test_leading_zeros_and_the_exact_limit_are_accepted(
+    monkeypatch: pytest.MonkeyPatch, value: str, body: bytes, limit: int
+) -> None:
+    response = FakeResponse(200, body, {"Content-Length": value})
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    result = HttpClient("https://host", user_agent=AGENT, max_body_bytes=limit).request(
+        "GET", "/", deadline=Deadline(5), headers={}
+    )
+    assert (result.status, result.body) == (200, body)
+
+
+@pytest.mark.parametrize("value", ["9"])
+def test_one_byte_over_the_limit_never_reads(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    response = FakeResponse(200, b"123456789", {"Content-Length": value})
+
+    def unexpected_read(size: int) -> bytes:
+        pytest.fail("A declared oversize must be refused before the first read")
+
+    monkeypatch.setattr(response, "read1", unexpected_read)
+    monkeypatch.setattr(http_module, "open_url", lambda *args, **kwargs: response)
+    with pytest.raises(ApiError) as caught:
+        HttpClient("https://host", user_agent=AGENT, max_body_bytes=8).request(
+            "GET", "/", deadline=Deadline(5), headers={}
+        )
+    assert (caught.value.category, caught.value.code) == ("response", "body_too_large")
+
+
+@pytest.mark.parametrize(
+    ("value", "status"),
+    [("+10", 200), ("1_0", 200), ("1" + "0" * 4300, 201)],
+)
+def test_wire_lengths_http_client_would_misread_fail_after_the_write(
+    server: Callable[..., LoopbackServer], value: str, status: int
+) -> None:
+    # A real socket: the server accepts the write, then declares a length the
+    # transport must not trust. The caller sees an ApiError it can reconcile.
+    def handler(conn: socket.socket, request: bytes) -> None:
+        send_all(
+            conn,
+            f"HTTP/1.1 {status} Created\r\nContent-Length: {value}\r\n"
+            "Connection: close\r\n\r\nabc".encode("ascii"),
+        )
+
+    instance = server(handler)
+    with pytest.raises(ApiError) as excinfo:
+        client_for(instance).request(
+            "POST", "/items", deadline=Deadline(5), headers=NO_HEADERS, body=b"{}"
+        )
+    assert excinfo.value.code in {"http_protocol", "body_too_large"}
+    assert len(instance.requests) == 1
+
+
 @pytest.mark.parametrize("expire_at", ["before", "after"])
 def test_read_budget_checks_and_close_are_deterministic(
     monkeypatch: pytest.MonkeyPatch, expire_at: str
@@ -1195,4 +1471,28 @@ def test_read_budget_checks_and_close_are_deterministic(
         )
     assert caught.value.code == "deadline_exceeded"
     assert len(reads) == (0 if expire_at == "before" else 1)
+    assert response.closed_count == 1
+
+
+def test_zero_length_still_checks_the_budget_after_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(
+        "ansible_collections.foundata.utils.plugins.module_utils.deadline.time.monotonic",
+        lambda: now[0],
+    )
+    deadline = Deadline(1)
+    response = FakeResponse(200, b"", {"Content-Length": "0"})
+
+    def open_response(*args: Any, **kwargs: Any) -> FakeResponse:
+        now[0] = 2.0
+        return response
+
+    monkeypatch.setattr(http_module, "open_url", open_response)
+    with pytest.raises(TransportTimeout) as caught:
+        HttpClient("https://host", user_agent=AGENT).request(
+            "GET", "/", deadline=deadline, headers={}
+        )
+    assert caught.value.code == "deadline_exceeded"
     assert response.closed_count == 1

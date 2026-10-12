@@ -208,6 +208,51 @@
           - "__http_client_bad_deadline['error_code'] == 'invalid_deadline'"
           - "'scripted failure' not in (__http_client_oversized | ansible.builtin.to_json)"
 
+    - name: "Create an item whose reply declares a length beyond Python's integer limit"
+      http_probe:
+        url: "{{ __http_client_url }}"
+        method: "POST"
+        path: "/items/alpha"
+        reconcile_path: "/items/alpha/state"
+        deadline: 10
+      register: __http_client_create_readable
+
+    - name: "Create an item whose reconciliation read fails"
+      http_probe:
+        url: "{{ __http_client_url }}"
+        method: "POST"
+        path: "/items/beta"
+        reconcile_path: "/items/beta/broken"
+        deadline: 10
+      ignore_errors: true
+      register: __http_client_create_unreadable
+
+    - name: "Read both items' write counts"
+      http_probe:
+        url: "{{ __http_client_url }}"
+        path: "/items/{{ item }}/state"
+        return_body: true
+        deadline: 10
+      loop:
+        - "alpha"
+        - "beta"
+      register: __http_client_item_state
+
+    - name: "Verify the accepted creations report their actual change"
+      ansible.builtin.assert:
+        that:
+          - "__http_client_create_readable is not ansible.builtin.failed"
+          - "__http_client_create_readable is ansible.builtin.changed"
+          - "__http_client_create_readable['reconciled'] is ansible.builtin.true"
+          - "__http_client_create_readable['write_error_code'] == 'http_protocol'"
+          - "__http_client_create_unreadable is ansible.builtin.failed"
+          - "__http_client_create_unreadable is ansible.builtin.changed"
+          - "__http_client_create_unreadable['outcome'] == 'unknown'"
+          - "__http_client_create_unreadable['error_category'] == 'transport'"
+          - "__http_client_create_unreadable['error_code'] == 'http_protocol'"
+          - "(__http_client_item_state['results'][0]['body'] | ansible.builtin.from_json)['writes'] == 1"
+          - "(__http_client_item_state['results'][1]['body'] | ansible.builtin.from_json)['writes'] == 1"
+
     - name: "Verify controller-visible results exclude private secrets and protocol fields"
       ansible.builtin.assert:
         that:

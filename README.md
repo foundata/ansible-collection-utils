@@ -179,10 +179,23 @@ What it guarantees:
   remaining deadline; `timeout` must be positive and at most
   `deadline.MAX_SECONDS`. The body is read with `read1`, with a budget check
   before and after every read and a byte limit. A declared `Content-Length`
-  beyond the limit is refused before the first read; a body shorter than its
-  declared length is a protocol failure, not a truncated success.
-  HEAD and 304 responses have no body; their representation length is not a
-  received-body size and is exempt from these checks.
+  literal with more digits than the limit's decimal representation, counting
+  leading zeros, is refused before reading as `transport/http_protocol`.
+  ASCII decimal literals within that digit bound may have leading zeros; a value
+  beyond the limit is `response/body_too_large`. Non-ASCII digits, signs,
+  underscores and a body shorter than its declared length are protocol
+  failures. More than one `Content-Length` field, or a single field
+  containing a comma list, is a `transport/http_protocol` failure before
+  reading, even when all values are equal.
+  For length-framed bodies, each read is capped at the remaining declared
+  bytes and stops at that count without waiting for EOF. Before each nonempty
+  read, buffered bytes beyond the remaining declared length cause
+  `transport/http_protocol`. A zero length completes without reading. The
+  client closes the response and does not wait for bytes arriving after
+  completion.
+  Chunked bodies use chunk framing, not a concurrent length, and remain
+  subject to the byte limit. HEAD, 1xx, 204 and 304 responses have no body;
+  their length fields are exempt from received-body checks.
 - Every response is closed, including an error status, a refused encoding,
   an oversized body and a failed read.
 - An HTTP error status is a response, not an exception: its body is read
