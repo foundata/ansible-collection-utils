@@ -4,10 +4,22 @@
 
 The client sends bytes and returns bytes. A product client encodes its
 requests, sets its authentication and product headers, decodes the body and
-checks the HTTP and the application status. This transport owns the safety
-mechanics: the socket timeout bounded by the shared deadline, the body size
-limit, the closed response, no redirects, no ``netrc``, no decompression, and
-the translation of transport failures into :class:`ApiError`.
+checks the HTTP and the application status. Products differ exactly there:
+one sends JSON, another form bodies with a product header such as
+``OCS-APIRequest``. A transport that encoded JSON would grow a branch for
+every product.
+
+The transport owns the safety mechanics, and no product can switch them off.
+Redirects are not followed, because a redirect can carry credentials to
+another origin. ``netrc`` is not read, because it can silently supply
+credentials the caller never gave. Only the ``identity`` content encoding is
+requested and accepted; decompression would need its own bounds on the decoded
+size and on the time between budget checks. A request path cannot leave the
+endpoint's origin and path prefix. The socket timeout is the smaller of the
+configured timeout and the remaining deadline. Every body, including that of
+an error status, is read under the deadline and a byte limit, and every
+response is closed. Transport failures become :class:`ApiError` without the
+server's text.
 """
 
 from __future__ import annotations
@@ -251,6 +263,9 @@ class HttpClient:
             reason = error.reason
             if isinstance(reason, _TIMEOUT_TYPES):
                 raise TransportTimeout(code="socket_timeout") from None
+            # From ansible-core 2.20 on, open_url hands an SSLContext to urllib,
+            # so a certificate failure arrives here; 2.19 raises its own
+            # SSLValidationError, caught below.
             if isinstance(reason, SSLCertVerificationError):
                 raise ApiError(
                     "TLS validation failed", category="transport", code="tls_validation"
@@ -277,7 +292,8 @@ class HttpClient:
                 code="http_protocol",
             ) from None
         finally:
-            # An HTTPError without a body stream has no file to close.
+            # An HTTPError without a body stream has no file to close, and
+            # closing it anyway raises KeyError on Python 3.9.
             if response is not None and getattr(response, "fp", None) is not None:
                 response.close()
 
@@ -377,6 +393,8 @@ class HttpClient:
                     code="body_too_large",
                 )
             chunks.append(chunk)
+        # read1 ends a short body silently; only chunked framing raises
+        # IncompleteRead.
         if declared is not None and size < declared:
             raise ApiError(
                 "Incomplete HTTP response body",
@@ -389,10 +407,13 @@ class HttpClient:
 def decode_json(body: bytes) -> Any:
     """Decode a JSON response body, or raise a local ``response`` error.
 
-    JSON travels as UTF-8; an empty body is not a document, so a product that
-    answers a write without a body checks ``HttpResponse.body`` before it
-    decodes. The decoded value is returned as is; the product validates its
-    shape.
+    The transport otherwise stays bytes only; this decoder exists because
+    every JSON product repeated the same decoding. JSON travels as UTF-8; an
+    empty body is not a document, so a product that answers a write without a
+    body checks ``HttpResponse.body`` before it decodes. The decoded value is
+    returned as is; the product validates its shape. The two failures keep
+    separate codes; a product that publishes one code for both maps them
+    itself.
 
     Raises:
         ApiError: With category ``response`` and code ``invalid_utf8`` when
@@ -422,7 +443,9 @@ def http_argument_spec() -> dict[str, Any]:
     The options match the ``foundata.utils.http_client`` documentation fragment. A
     product adds its credential options to the copy and may override an
     entry; each call builds a new specification, so extending it affects no
-    other module.
+    other module. ``url`` is included and required because the client
+    consumes it; a product that offers an environment variable fallback
+    overrides the entry and its description.
     """
     return {
         "url": {"type": "str", "required": True},
@@ -471,10 +494,12 @@ def _declared_length(raw_headers: Any, limit: int) -> int | None:
     Only ASCII digits form a length (``1*DIGIT``, RFC 9110 section 8.6).
     ``http.client`` frames the body with ``int()``, which also accepts a sign,
     underscores and other decimal digits, so any other present value is a
-    framing failure, not an absent header (RFC 9112 section 6.3). A value with
-    more digits than ``limit``, including leading zeros, is a framing failure
-    before conversion. This keeps validation consistent with the HTTP reader's
-    integer conversion limit.
+    framing failure, not an absent header (RFC 9112 section 6.3). Repeated
+    fields and comma lists are refused even when their values agree. A value
+    with more digits than ``limit``, including leading zeros, is a framing
+    failure before conversion: ``http.client`` treats a length it cannot
+    convert, such as one beyond Python's integer string conversion limit, as
+    absent and reads to the end of the connection.
     """
     values = raw_headers.get_all("Content-Length", []) if raw_headers else []
     if not values:

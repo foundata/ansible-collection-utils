@@ -1,6 +1,13 @@
 # SPDX-FileCopyrightText: foundata GmbH <https://foundata.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""One monotonic elapsed-time budget per module operation."""
+"""One monotonic elapsed-time budget per module operation.
+
+The budget bounds the whole operation, not one request: retries, polling,
+read-back and command execution share it, and no transport resets it. A
+budget restarted per call would let retries and polling multiply the time the
+caller allowed. The budget usually comes from a module option, so an invalid
+one fails as an ``argument`` error before anything converts it.
+"""
 
 from __future__ import annotations
 

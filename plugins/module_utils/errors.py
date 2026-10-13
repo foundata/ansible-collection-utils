@@ -3,8 +3,29 @@
 """Shared exception base, error schema and safe failure for product modules.
 
 A product collection derives its own failures from :class:`ApiError` and
-catches that shared base at the module boundary, where :func:`fail_from`
-turns the caught error into ``fail_json`` without publishing the error's text.
+catches that shared base at the module boundary. Catching only the product's
+subclass would miss :class:`TransportTimeout`, which the shared transports
+raise as its sibling. :func:`fail_from` is the only path from a caught error
+to ``fail_json``. It publishes the category and code only when the product's
+:class:`ErrorSchema` allows the pair, an extra field only after a product
+validator accepted it, and never the error's text. It always passes
+``exception=None``: from ansible-core 2.19 on, a captured traceback carries
+the pending exception's message, while with ``None`` it is a plain call stack
+of the module's own frames. Product text that leaked into an exception message
+therefore reaches neither the result nor the traceback nor the log.
+
+Every helper of this collection separates expected failures from programming
+errors the same way. A value a module option can carry, such as an endpoint
+URL, a timeout, a deadline or a header value holding a credential, raises
+:class:`ApiError` with category ``argument``, so the module boundary reports
+it like any other expected failure. A value only product code sets, such as a
+user agent, a method or a header name, raises ``ValueError`` or ``TypeError``
+and stays loud. Each check runs before the value reaches a system call, where
+it would fail with an exception that nothing translates.
+
+Each helper publishes the categories and codes it raises in ``ERROR_CODES``.
+:func:`merge_error_codes` folds them into the product's schema, so a product
+cannot forget a shared code.
 """
 
 from __future__ import annotations
@@ -206,6 +227,9 @@ def fail_from(
         try:
             extra[key] = validator(value)
         except (ValueError, TypeError):
+            # Drop the field and keep the pair: an invalid identity the caller
+            # supplied is usually why the operation failed, and the fallback
+            # code would hide that.
             continue
         except Exception as validator_error:
             # Core can inspect the exception chain even when display is suppressed.

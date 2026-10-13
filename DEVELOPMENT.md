@@ -7,7 +7,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 Changes follow foundata's
 [Ansible module guide](https://foundata.com/en/guidelines/ansible-modules/), in
-particular its rules for shared code and documentation fragments.
+particular its rules for shared code and documentation fragments. Each module
+utility's docstring states the rules it enforces and why; a change keeps them
+or revises them there.
 
 ## Prerequisites<a id="prerequisites"></a>
 
@@ -55,6 +57,62 @@ checkout.
 The default sessions verify the foundata lint rules and validate both changelog
 fragments and the generated `changelogs/changelog.yaml` separately.
 
+The unit and integration lanes cover every admitted ansible-core version, each
+on its payload floor and upper Python as `antsibull-nox.toml` sets them. The
+`http_client` unit tests drive a scripted loopback server through stalled,
+trickled, redirected, oversized, compressed, short and malformed responses and
+TLS with a certificate that `openssl` generates per run; a fake opener raises
+every exception type of `open_url`. The `errors` tests run a real
+`AnsibleModule` with a synthetic secret, with traceback capture from 2.19 on,
+beside a control that shows the leak without `exception=None`. The integration
+targets drive test-only consumer modules through real tasks; `exec` needs GNU
+coreutils. None of these tests qualifies a product.
+
+## Boundaries<a id="boundaries"></a>
+
+This collection was rendered from the `collection_default` variant of
+[foundata's Ansible skeletons](https://foundata.com/en/projects/ansible-skeletons/)
+and follows the check tooling of the `collection_modules_grid` variant.
+Licensing, the changelog configuration, `tests/config.yml`, `.ansible-lint`,
+`.yamllint` and `noxfile.py` come from the skeleton, and skeleton changes reach
+them as backports. A plugin-only collection differs from the render:
+
+- It has no `roles/`, `FIXME.md`, `requirements.txt` or `extensions/molecule`.
+  Molecule needs a target to converge, and a utility collection has none.
+- `noxfile.py` leaves out the `import-check` and `molecule` sessions of the
+  module skeletons. `import-check` expects modules in the archive, and there is
+  no Molecule scenario; `build-import-check` runs the Galaxy importer instead.
+- `antsibull-nox.toml` adds the `lint`, `ansible_test_units` and
+  `ansible_test_integration_w_default_container` sessions, which `ruff.toml`
+  and `.mypy.ini` configure.
+
+`foundata.utils` owns product-independent mechanics and nothing else:
+
+```text
+plugins/module_utils/errors.py        exception base, error schema, safe failure
+plugins/module_utils/deadline.py      one monotonic budget per operation
+plugins/module_utils/http_client.py   bounded byte transport over open_url
+plugins/module_utils/exec.py          supervised byte commands and locator records
+plugins/doc_fragments/http_client.py  the mechanical connection options
+plugins/doc_fragments/exec.py         the mechanical execution locator options
+tests/unit/plugins/module_utils/      unit tests and a loopback server
+tests/integration/targets/            test-only consumer modules and a server process
+```
+
+`http_client` and `exec` import `deadline` and `errors` but not each other, so a
+module payload carries only what it uses. What a product decides is
+product-owned and stays in the consumer; the README's introduction lists it.
+
+Each helper is published with at least one product consumer that passed its
+installed-artifact acceptance with it. A second consumer shows that an
+interface is general rather than one product's shape:
+
+- `errors`, `deadline`, `http_client` and the `foundata.utils.http_client`
+  fragment serve `foundata.opnsense` and `foundata.zammad`, so they have their
+  second consumer.
+- `exec` and the `foundata.utils.exec` fragment serve `foundata.zammad`. They
+  wait for `foundata.nextcloud` and its `occ` commands as the second consumer.
+
 ## Changing a helper<a id="changing-a-helper"></a>
 
 The README's [included content](./README.md#content) lists the supported
@@ -65,7 +123,7 @@ the consumers pin `foundata.utils` below 2.0.0.
 
 Add a changelog fragment for every user-visible change, as
 [`CONTRIBUTING.md`](./CONTRIBUTING.md#submitting-changes) describes. Before a
-release, run the checks of every consumer.
+release, run the checks of every consumer that [Boundaries](#boundaries) names.
 
 ## Consumers of an unreleased revision<a id="consumers"></a>
 
@@ -117,7 +175,8 @@ explains every `release` command below. The commands need Bash.
 
 Galaxy accepts a version once and never replaces it, so every check after step
 4 runs against the archive built there. A helper is published only after at
-least one product collection passed its installed-artifact acceptance with it.
+least one product collection passed its installed-artifact acceptance with it;
+[Boundaries](#boundaries) names the consumers.
 
 1. **Run the checks and decide the version.** Every session must pass before
    the release starts.

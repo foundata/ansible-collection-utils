@@ -11,6 +11,11 @@ module utilities and documentation fragments only. There are no modules,
 roles or playbooks; a product collection imports the utilities into its own
 modules.
 
+Everything a product decides stays in the product collection: the resource
+engine, authentication, request encoding, the application status check,
+compatibility policy, diff projection, locator validation, the identity probe,
+version parsing and normalization.
+
 The collection depends on ansible-core alone and supports the same floors as
 its consumers: ansible-core 2.19 or newer on the controller, Python 3.9 or
 newer where a module runs.
@@ -68,6 +73,13 @@ interfaces. Names with a leading underscore are internal.
 From 1.0.0 on, public signatures, exceptions, defaults, error codes and
 fragment options are versioned interfaces: a change that breaks them needs a
 new major version.
+
+A value that a module option can carry, such as the endpoint URL, a timeout,
+the certificate authority path, the deadline or a header value with a
+credential, fails as `ApiError` with category `argument`, so the module's catch
+boundary reports it like any other expected failure. A value only product code
+sets, such as the user agent, the body limit, the method or a header name,
+raises `ValueError` or `TypeError`: that is a programming error.
 
 
 ### `errors`<a id="errors"></a>
@@ -212,7 +224,8 @@ What it guarantees:
   `response` errors `invalid_utf8` and `invalid_json` without the body text.
   An empty body is not a document: a product that answers a write without a
   body checks `body` before it decodes. The shape of the decoded value is
-  the product's to validate.
+  the product's to validate. A product that publishes one code for both
+  failures maps them itself.
 - Header values never enter a `repr`: `HttpResponse` prints its status only
   and `HttpClient` its base URL only. The client stores no headers.
 - `http_argument_spec()` returns a fresh specification of the mechanical
@@ -615,8 +628,11 @@ None beyond ansible-core. See `dependencies` in [`galaxy.yml`](./galaxy.yml).
 
 ## Development and testing<a id="development"></a>
 
-[`DEVELOPMENT.md`](./DEVELOPMENT.md) describes the checks, how to change a
-helper and the release. To report a problem or submit a change, see
+[`DEVELOPMENT.md`](./DEVELOPMENT.md) describes the checks, the layout, how to
+change a helper and the release. Each module utility's docstring states the
+rules it enforces and why. The collection's own tests use a loopback server and
+command fixtures and qualify no product; each consumer's acceptance does that
+against its product. To report a problem or submit a change, see
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 

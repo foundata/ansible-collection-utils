@@ -2,9 +2,48 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Bounded command execution; locator policy and output parsing stay in products.
 
-The synchronous supervisor owns all three pipes in run_command's callback.
-It raises a private completion signal to bypass core's unbounded communication
-loop. This is deliberately not a timer that kills only the immediate child.
+:func:`run_bounded` runs one prepared command on a POSIX execution host under
+the operation's deadline, bounds each output stream and returns the bytes to a
+product parser. Whether a status means success, and whether a write happened,
+is the product's decision.
+
+Core's ``run_command`` buffers both output streams and writes stdin
+synchronously, so it bounds neither. The runner still starts the process
+through ``run_command`` and takes over in its ``before_communicate_callback``:
+a synchronous supervisor owns all three pipes, uses nonblocking I/O and a
+selector, closes the pipes, reaps the child and raises a private completion
+signal. With ``handle_exceptions=False`` core propagates that signal before it
+enters its own communication loop. This is deliberately not a timer that
+kills only the immediate child.
+
+If an admitted ansible-core changes that handoff so the supervisor can no
+longer own and clean up all three pipes first, keep the signature of
+:func:`run_bounded`, create the process with a direct ``Popen`` supervisor in
+this file, add the exact per-version ``ansible-bad-function`` sanity ignore
+with its reason and removal condition, and qualify handoff, pipe bounds,
+identity, environment and cleanup again. Never fall back to core's unbounded
+communication. As long as no subprocess is created outside ``run_command``,
+no ignore is needed: the supervisor's ``os.killpg``, nonblocking ``os.read``
+and ``os.write`` and ``Popen`` wait and signal calls pass that sanity rule.
+Should an admitted core flag one of them, ignore only that file and code for
+that version, with this reason and its removal condition.
+
+GNU coreutils ``timeout`` puts the command into its own process group and is
+only a fallback watchdog. The supervisor observes the deadline itself and
+kills the group, because an application can exit 124 on its own; that status
+alone never means expiry. Cleanup covers the process group with its ordinary
+descendants, and a descendant left after the parent exits is a failure even
+when the parent succeeded. Cleanup cannot reach detached sessions,
+container-side processes or remote work: stopping ``podman exec`` does not
+stop what it started in the container, so a product qualifies those forms
+itself. Waits are bounded, but uninterruptible kernel work cannot be killed.
+
+Before a write, the runner compares the module's effective UID and probes the
+application's UID through the product's own prefix. It never calls ``sudo`` or
+changes UID; resolving user names, container identities and wrapper users
+stays with the product. It never calls ``fail_json`` and never retries: the
+product tracks write attempts through parsing and read-back and reports an
+interrupted write with an unknown outcome.
 """
 
 from __future__ import annotations
@@ -87,6 +126,9 @@ class Execution:
     decimal UID. A product validates paths, identifiers, prefixes and option
     boundaries before constructing this object. All fields can carry sensitive
     data and are omitted from repr. Secrets belong only in run_bounded's stdin.
+    ``validate_effective_environment`` sees the host environment the command
+    inherits. A container or wrapper target environment needs the product's
+    own validation, because a host map cannot describe it.
     """
 
     argv: Sequence[str] = field(repr=False)
@@ -138,6 +180,8 @@ class LocatorProfile:
     validates values and builds the product's command and identity probe.
     ``fields`` rejects unused fields before prepare is called. Qualification
     records name the exact deadline, cleanup and identity evidence and limits.
+    This is a declaration and validation boundary, not a generic container
+    adapter: the kinds share mechanics, never a product's policy.
     """
 
     kind: str
@@ -177,9 +221,10 @@ class LocatorProfile:
 class CommandResult:
     """Internal bytes and safe status metadata, never an Ansible result.
 
-    Nonzero exits are normal results: a product parser validates the status and
-    output structure and derives local diagnostic codes. Neither stream is in
-    repr. Deadline/cleanup failures carry this same structure on their error.
+    Nonzero exits are normal results, as an HTTP error status is a response: a
+    product parser validates the status and output structure and derives
+    local diagnostic codes. Neither stream is in repr. Deadline/cleanup
+    failures carry this same structure on their error.
     """
 
     rc: int
@@ -190,7 +235,12 @@ class CommandResult:
 
 
 class CommandError(ApiError):
-    """A mechanical failure, with bounded internal output when available."""
+    """A mechanical failure, with bounded internal output when available.
+
+    ``write_attempted`` is true only once the requested ``write=True`` command
+    started, not for its identity probe or a preflight failure, so a refused
+    preflight is never reported as a possible mutation.
+    """
 
     def __init__(
         self,
@@ -236,6 +286,8 @@ def _validate(execution: Execution, module: RunsCommand) -> dict[str, str]:
         )
     ):
         raise CommandError(category="argument", code="invalid_execution")
+    # Validate what the command inherits, not only the additions: an injection
+    # variable can come from the module process's own environment.
     environment = os.environ.copy()
     environment.update(module.run_command_environ_update or {})
     environment.update(execution.environment)
@@ -350,6 +402,8 @@ class _Supervisor:
                             if process.stdin is not None:
                                 process.stdin.close()
                     else:
+                        # One byte past the allowance proves a flood without
+                        # retaining it.
                         try:
                             chunk = os.read(
                                 fd, min(65536, self.limit - len(output[index]) + 1)
@@ -447,6 +501,9 @@ def run_bounded(
         "--kill-after",
         str(profile.kill_after),
         "--",
+        # The watchdog fires after the supervisor's own expiry check, so its
+        # exit status never decides expiry; --preserve-status would not
+        # separate an application's own 124 either.
         str(math.ceil(budget) + 1),
         *execution.argv,
     ]
