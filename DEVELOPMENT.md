@@ -16,7 +16,10 @@ or revises them there.
 - [uv](https://docs.astral.sh/uv/), or [nox](https://nox.thea.codes/) with
   [antsibull-nox](https://docs.ansible.com/projects/antsibull-nox/) in one
   Python environment.
-- [Podman](https://podman.io/) for the container-backed `ansible-test` sessions.
+- [Podman](https://podman.io/) or Docker for the container-backed `ansible-test`
+  sessions. With both installed, nox uses Podman; set
+  `ANTSIBULL_NOX_CONTAINER_ENGINE`, for example to `auto-prefer-docker`, to
+  prefer Docker.
 
 This utility collection has no product endpoint or Molecule scenario.
 
@@ -36,26 +39,22 @@ uv run noxfile.py -s ansible-test-integration
 
 With nox installed, `nox` replaces `uv run noxfile.py`, for example
 `nox -s lint`. A plain run applies the project's own rewrites before checking:
-`ansible-lint --fix`, Python and Markdown formatting.
-With `CI=true` every session only checks. Arguments after `--` go to the
-session's tool unchanged. `noxfile.py` documents each session; the built-in
-sessions are configured in `antsibull-nox.toml`.
+`ansible-lint --fix`, Python and Markdown formatting. With `CI=true` every
+session only checks. The default sessions verify the foundata lint rules and
+validate both changelog fragments and the generated `changelogs/changelog.yaml`
+separately. Arguments after `--` go to the session's tool unchanged.
+`noxfile.py` documents each session; the built-in sessions are configured in
+`antsibull-nox.toml`.
 
 Select the `ansible-test-*` meta sessions by name. Tags select nothing:
 antsibull-nox registers them for its CI matrix generator only. `-l` also lists
 the single lanes; run one by its name, for example
-`uv run noxfile.py -s ansible-test-units-2.21-3.14`.
+`uv run noxfile.py -s ansible-test-units-2.21-3.14`. Run one nox chain at a time
+per container store.
+
 Set `max_version` in the ansible-test session configuration to omit an
-unreleased series; otherwise its lane installs the GitHub stable branch
-before a PyPI release. Run one nox chain at a time per container store.
-
-If `docs-check` fails with `AF_UNIX path too long` under Python 3.14, run nox
-with Python 3.13 (`uv run --python 3.13 noxfile.py`) or from a shorter checkout
-path: antsibull-docs starts worker processes whose socket path includes the
-checkout.
-
-The default sessions verify the foundata lint rules and validate both changelog
-fragments and the generated `changelogs/changelog.yaml` separately.
+unreleased series; otherwise its lane installs the GitHub stable branch before a
+PyPI release.
 
 The unit and integration lanes cover every admitted ansible-core version, each
 on its payload floor and upper Python as `antsibull-nox.toml` sets them. The
@@ -67,6 +66,11 @@ every exception type of `open_url`. The `errors` tests run a real
 beside a control that shows the leak without `exception=None`. The integration
 targets drive test-only consumer modules through real tasks; `exec` needs GNU
 coreutils. None of these tests qualifies a product.
+
+If `docs-check` fails with `AF_UNIX path too long` under Python 3.14, run nox
+with Python 3.13 (`uv run --python 3.13 noxfile.py`) or from a shorter checkout
+path: antsibull-docs starts worker processes whose socket path includes the
+checkout.
 
 ## Boundaries<a id="boundaries"></a>
 
@@ -122,8 +126,9 @@ symbols are versioned: a change that breaks one needs a new major version, and
 the consumers pin `foundata.utils` below 2.0.0.
 
 Add a changelog fragment for every user-visible change, as
-[`CONTRIBUTING.md`](./CONTRIBUTING.md#submitting-changes) describes. Before a
-release, run the checks of every consumer that [Boundaries](#boundaries) names.
+[`CONTRIBUTING.md`](./CONTRIBUTING.md#submitting-changes) describes. Before
+publication, every consumer that [Boundaries](#boundaries) names qualifies the
+release archive, as step 5 of [Releases](#releases) describes.
 
 ## Consumers of an unreleased revision<a id="consumers"></a>
 
@@ -137,7 +142,7 @@ the `ansible-test` lanes included, sees the copy. Do not put local paths into
 `antsibull-nox.toml`. The `import-check` session of a consumer fails until the
 `foundata.utils` revision it needs resolves from that path.
 
-## Unit test iteration
+## Unit test iteration<a id="unit-test-iteration"></a>
 
 For quick iteration, run the unit tests directly with `pytest` and
 ansible-core in one Python environment. The TLS cases need the `openssl`
@@ -223,6 +228,8 @@ least one product collection passed its installed-artifact acceptance with it;
    ```
 
    `build` refuses an existing output directory. Remove it before a rebuild.
+   `dist` is a fixed path beside the checkout, so after an interruption, set
+   `version` and `dist` again in a new shell and continue with the next step.
 
 5. **Qualify the built archive with its consumers.** Install the archive from
    `${dist}` into a fresh collections path and run each consumer's default
