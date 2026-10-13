@@ -17,8 +17,7 @@ report issues and submit changes through any of our public repositories on
 platforms such as GitHub, GitLab or Codeberg. We coordinate the work internally
 and follow up on the platform where you contributed.
 
-Follow the [code of conduct](./CODE_OF_CONDUCT.md) when
-participating.
+Follow the [code of conduct](./CODE_OF_CONDUCT.md) when participating.
 
 Report vulnerabilities privately as described in [`SECURITY.md`](./SECURITY.md).
 

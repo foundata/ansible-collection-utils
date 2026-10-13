@@ -65,10 +65,9 @@ interfaces. Names with a leading underscore are internal.
 | `http_client` | `HttpClient`, `HttpResponse`, `decode_json`, `http_argument_spec`, `ERROR_CODES`, `HTTP_METHODS`, `RESERVED_HEADERS`, `DEFAULT_TIMEOUT_SECONDS`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_BODY_BYTES` |
 | `exec`        | `Execution`, `TimeoutProfile`, `LocatorProfile`, `CommandResult`, `CommandError`, `CommandTimeout`, `RunsCommand`, `run_bounded`, `exec_argument_spec`, `ERROR_CODES`, `DEFAULT_DEADLINE_SECONDS`, `DEFAULT_MAX_OUTPUT_BYTES` |
 
-utils 1.0.0 is released together with its first consumers. From 1.0.0 on,
-public signatures, exceptions, defaults, error codes and fragment options
-are versioned interfaces: a change that breaks them needs a new major
-version.
+From 1.0.0 on, public signatures, exceptions, defaults, error codes and
+fragment options are versioned interfaces: a change that breaks them needs a
+new major version.
 
 
 ### `errors`<a id="errors"></a>
@@ -178,24 +177,23 @@ What it guarantees:
 - The socket inactivity timeout is the smaller of `timeout` and the
   remaining deadline; `timeout` must be positive and at most
   `deadline.MAX_SECONDS`. The body is read with `read1`, with a budget check
-  before and after every read and a byte limit. A declared `Content-Length`
-  literal with more digits than the limit's decimal representation, counting
-  leading zeros, is refused before reading as `transport/http_protocol`.
-  ASCII decimal literals within that digit bound may have leading zeros; a value
+  before and after every read and a byte limit.
+- More than one `Content-Length` field, or a single field containing a comma
+  list, is a `transport/http_protocol` failure before reading, even when all
+  values are equal. So is a declared `Content-Length` literal with more digits
+  than the limit's decimal representation, counting leading zeros. ASCII
+  decimal literals within that digit bound may have leading zeros; a value
   beyond the limit is `response/body_too_large`. Non-ASCII digits, signs,
   underscores and a body shorter than its declared length are protocol
-  failures. More than one `Content-Length` field, or a single field
-  containing a comma list, is a `transport/http_protocol` failure before
-  reading, even when all values are equal.
-  For length-framed bodies, each read is capped at the remaining declared
-  bytes and stops at that count without waiting for EOF. Before each nonempty
-  read, buffered bytes beyond the remaining declared length cause
-  `transport/http_protocol`. A zero length completes without reading. The
-  client closes the response and does not wait for bytes arriving after
-  completion.
-  Chunked bodies use chunk framing, not a concurrent length, and remain
-  subject to the byte limit. HEAD, 1xx, 204 and 304 responses have no body;
-  their length fields are exempt from received-body checks.
+  failures.
+- For a length-framed body, each read is capped at the remaining declared
+  bytes, and reading stops at the declared count without waiting for EOF.
+  Before each nonempty read, buffered bytes beyond the remaining declared
+  length cause `transport/http_protocol`. A zero length completes without
+  reading. The client closes the response and does not wait for bytes arriving
+  after completion. Chunked bodies use chunk framing, not a concurrent length,
+  and remain subject to the byte limit. HEAD, 1xx, 204 and 304 responses have
+  no body; their length fields are exempt from received-body checks.
 - Every response is closed, including an error status, a refused encoding,
   an oversized body and a failed read.
 - An HTTP error status is a response, not an exception: its body is read
@@ -240,10 +238,10 @@ merged documentation against its real argument specification.
 
 ### `exec`<a id="exec"></a>
 
-`run_bounded(module, execution, profile=..., deadline=..., stdin=None,
-max_output_bytes=1 MiB, write=False)` executes one prepared command on a POSIX
-execution host. Import
-the utility as `from ...module_utils import exec as exec_util`.
+`run_bounded(module, execution, profile=..., deadline=..., stdin=None, max_output_bytes=1 MiB, write=False)`
+executes one prepared command on a POSIX execution host. Import the module under
+another name, so that Python's built-in `exec` stays usable:
+`from ansible_collections.foundata.utils.plugins.module_utils import exec as exec_util`.
 
 What it guarantees:
 
@@ -286,15 +284,13 @@ What it guarantees:
   detached session, and may still run: the code says cleanup was needed, not
   that it succeeded. A detached process that closed its pipes is not
   detected at all.
-  Cleanup waiting is bounded; process creation and uninterruptible kernel
-  work are not hard real-time operations.
 - The environment validator sees the actual inherited environment, the
   module's `run_command_environ_update`, and the execution's additions,
   including core's `PYTHONPATH` cleanup. The layers apply in that order and
   a later one wins: `os.environ`, then `run_command_environ_update`, then
   `Execution.environment`; an addition can therefore blank an inherited
-  variable. An invalid working directory or
-  environment fails before starting a command. No environment is silently
+  variable. An invalid working directory or environment fails before starting
+  a command. No environment is silently
   removed; the product must document and enforce its inherited policy.
 - With `write=True`, the runner compares the host effective UID and then
   executes `identity_argv` under the same deadline. Its bounded output must
@@ -341,9 +337,9 @@ identity prefixes. The declared forms are:
 | `podman`  | Product-validated engine prefix with explicit container and application-user options for both command and probe | Product must qualify engine version, container identity, target environment and in-container survivors after expiry |
 | `custom`  | Validated fixed wrapper prefix, including a documented application-user transition                              | Product must qualify the wrapper's identity probe, target environment, deadline propagation and cleanup; this is trusted execution, not confinement |
 
-Only the local process mechanics are qualified here. These declarations do
-not advertise tested Zammad, Nextcloud, Podman, Docker or user-switching
-wrappers. Their consumers supply and test the product records before use.
+Only the local process mechanics are qualified here. These declarations do not
+advertise tested product, Podman, Docker or user-switching wrappers. Their
+consumers supply and test the product records before use.
 
 
 ### Documentation fragment `foundata.utils.exec`<a id="fragment-exec"></a>
@@ -395,8 +391,21 @@ an unknown outcome.
 
 ## Using the helpers in a product module<a id="usage"></a>
 
+Declare the dependency in the product collection's `galaxy.yml`. Use the lowest
+release that provides every symbol the collection imports, test that release
+and the newest 1.x release, and keep the upper bound below the next major
+version:
+
+```yaml
+dependencies:
+  "foundata.utils": ">=1.0.0,<2.0.0"
+```
+
+`ansible-galaxy collection install` then installs `foundata.utils` together
+with the product collection.
+
 A product collection wraps the transport once: it sets authentication and
-content headers, translates the HTTP status into its own codes, decodes the
+content headers, translates the HTTP status into its own codes and decodes the
 body. The module tracks write attempts and calls that wrapper, never
 `HttpClient` directly. In this example only `name` and `enabled` are documented
 public item fields; all other response fields stay internal.
@@ -510,9 +519,8 @@ class Client:
             raise ProductError(
                 "Not found", category="product", code="not_found", status=404
             )
-        if (
-            response.status >= 400
-        ):  # the product refused the request; its text stays unread
+        if response.status >= 400:
+            # The product refused the request; its text stays unread.
             raise ProductError(
                 "Request rejected",
                 category="product",
@@ -550,13 +558,11 @@ try:
             changed_fields=["enabled"],
             verified="predicted",
         )
-    attempts += (
-        1  # retained through response parsing and read-back; never retry blindly
-    )
+    # Retained through response parsing and read-back; never retry blindly.
+    attempts += 1
     client.call("POST", path, {"enabled": True})
-    after = parse_item(
-        client.call("GET", path), name
-    )  # verify the public postcondition
+    # Verify the public postcondition.
+    after = parse_item(client.call("GET", path), name)
     if not after["enabled"]:
         raise ProductError(
             "Change did not persist", category="verification", code="not_persisted"
@@ -609,11 +615,9 @@ None beyond ansible-core. See `dependencies` in [`galaxy.yml`](./galaxy.yml).
 
 ## Development and testing<a id="development"></a>
 
-[`DEVELOPMENT.md`](./DEVELOPMENT.md) describes the checks. `antsibull-nox.toml`
-lists the sessions: `CI=true nox` for check-only lint, documentation, license,
-build and import, `nox -s ansible-test-sanity`, `nox -s ansible-test-units` and
-`nox -s ansible-test-integration` for the containerized `ansible-test` runs on
-every supported ansible-core version.
+[`DEVELOPMENT.md`](./DEVELOPMENT.md) describes the checks, how to change a
+helper and the release. To report a problem or submit a change, see
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 
 
@@ -637,6 +641,8 @@ components. The repository conforms to the
 an
 [SPDX software bill of materials (SBOM)](https://en.wikipedia.org/wiki/Software_Package_Data_Exchange).
 <!--REUSE-IgnoreEnd-->
+
+[![REUSE status](https://api.reuse.software/badge/github.com/foundata/ansible-collection-utils)](https://api.reuse.software/info/github.com/foundata/ansible-collection-utils)
 
 
 
