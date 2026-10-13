@@ -93,6 +93,16 @@ What it guarantees:
   also covers `TransportTimeout`, which a product subclass alone would miss.
   Each error carries a local `category`, a local `code` or `None`, and an
   HTTP `status` or `None`.
+- `ErrorSchema(codes_by_category=..., fallback=..., field_validators=...)` is
+  the product's public error schema. `codes_by_category` maps each allowed
+  category to its allowed codes; `None` among them permits an error without a
+  code. The `fallback` pair must itself be allowed. `merge_error_codes()` folds
+  the `ERROR_CODES` mappings of the helpers into the product's codes, so a
+  product cannot forget a shared code.
+- Each entry of `field_validators` returns the value to publish for one extra
+  result key or raises `ValueError` or `TypeError`. Validators are trusted
+  product code: they must allowlist public values, not just coerce them, and
+  keep their own exception text free of sensitive values.
 - `fail_from(module, error, schema=..., msg=..., changed=..., outcome=...,
   fields=...)` calls `fail_json` with a local message, the error's category
   and code validated against the product's `ErrorSchema` (unknown pairs
@@ -102,10 +112,6 @@ What it guarantees:
   text, so a product response that leaked into an exception message does not
   reach the result, the traceback or the log, even with
   `ANSIBLE_DISPLAY_TRACEBACK` enabled.
-- `fail_from` refuses an `outcome` that disagrees with `changed`, a
-  `changed` that is not a boolean and an empty `msg`. Those are programming
-  errors and raise `ValueError` or `TypeError` without chaining the handled
-  error.
 - A field the schema cannot publish is left out of the result: a key that is
   not a string, a key in `RESERVED_RESULT_KEYS` or with the `_ansible_`
   prefix, a key without a validator, or a value its validator rejects with
@@ -113,10 +119,11 @@ What it guarantees:
   the module still ends with `changed`, `outcome` and the failure's own code.
   A validator that raises anything else is a programming error and
   propagates with its context and cause cleared, so it cannot chain the
-  handled error's text. Validators must keep their own exception text free
-  of sensitive values.
-- `merge_error_codes()` folds the `ERROR_CODES` mappings of the helpers into
-  a product schema.
+  handled error's text.
+- `fail_from` raises `TypeError` for an `error` that is no `ApiError` or a
+  `changed` that is not a boolean, and `ValueError` for an empty `msg` or an
+  `outcome` outside `OUTCOMES` or in disagreement with `changed`. These are
+  programming errors and do not chain the handled error.
 
 What it does not do:
 
@@ -143,8 +150,10 @@ What it guarantees:
   category `argument` and code `invalid_deadline`, so a bad module option
   fails like any other expected failure. The bound keeps every derived
   socket, selector and wrapper timeout representable.
-- A transport never resets a deadline. The caller shares one deadline across
-  retries, polling, read-back and command execution.
+- No transport resets a deadline. Create one per module operation, outside any
+  retry or polling loop, and pass the same object to every call of that
+  operation, so that retries, polling, read-back and command execution share one
+  budget.
 
 What it does not do:
 
@@ -156,18 +165,14 @@ What it does not do:
 
 A bounded byte transport over `ansible.module_utils.urls.open_url`.
 
-`HttpClient(base_url, user_agent=..., validate_certs=True, ca_path=None,
-use_proxy=True, timeout=30, max_body_bytes=4 MiB)` is configured once per
-endpoint. `request(method, path, deadline=..., headers=..., body=None)`
-returns an `HttpResponse` with `status`, lower-cased `headers` and the raw
-`body` bytes.
+`HttpClient(base_url, user_agent=..., validate_certs=True, ca_path=None, use_proxy=True, timeout=30, max_body_bytes=4 MiB)`
+is configured once per endpoint.
+`request(method, path, deadline=..., headers=..., body=None)` sends one request
+and returns an `HttpResponse` with `status`, `headers` under lower-cased names
+(a repeated header is joined with a comma) and the raw `body` bytes.
 
 What it guarantees:
 
-- Bytes in, bytes out. The product encodes JSON or forms, sets its
-  authentication and product headers, decodes the body and checks the HTTP
-  and the application status. The transport does no retry and no
-  pagination.
 - The request stays within the endpoint: the path must be absolute, without
   dot segments, a fragment, a backslash, whitespace or control characters,
   and the resulting URL must keep the endpoint's origin and path prefix. A
@@ -177,19 +182,19 @@ What it guarantees:
   and must name an existing regular file; failures loading it are translated
   locally. `validate_certs=False` is never chosen automatically.
 - Redirects are not followed: a 3xx response is returned like any other, so
-  credentials never travel to another origin. `netrc` is not read. Only the
-  `identity` content encoding is requested and accepted; a compressed
-  response is refused. Products cannot set `Accept-Encoding`, `User-Agent`,
-  `Host`, `Content-Length`, `Transfer-Encoding` or `Connection`.
-- A header value may hold tabs and printable ASCII only. Anything else,
-  such as a line break or a non-ASCII character in a credential from a
-  module option, raises `ApiError` with category `argument` and code
-  `invalid_header` before any request, without the value. An invalid or
-  reserved header name stays a programming error and raises `ValueError`.
-- The socket inactivity timeout is the smaller of `timeout` and the
-  remaining deadline; `timeout` must be positive and at most
+  credentials never travel to another origin. `netrc` is not read.
+- Products cannot set `Accept-Encoding`, `User-Agent`, `Host`, `Content-Length`,
+  `Transfer-Encoding` or `Connection`. A reserved or invalid header name is a
+  programming error and raises `ValueError`. A header value may hold tabs and
+  printable ASCII only. Anything else, such as a line break or a non-ASCII
+  character in a credential from a module option, raises `ApiError` with
+  category `argument` and code `invalid_header` before any request, without the
+  value.
+- The socket inactivity timeout is the smaller of `timeout` and the remaining
+  deadline; `timeout` must be positive, finite and at most
   `deadline.MAX_SECONDS`. The body is read with `read1`, with a budget check
-  before and after every read and a byte limit.
+  before and after every read and a byte limit. Only the `identity` content
+  encoding is requested and accepted; a compressed response is refused.
 - More than one `Content-Length` field, or a single field containing a comma
   list, is a `transport/http_protocol` failure before reading, even when all
   values are equal. So is a declared `Content-Length` literal with more digits
@@ -215,11 +220,11 @@ What it guarantees:
   `http_client.ERROR_CODES`: `argument` (`invalid_url`, `invalid_timeout`,
   `invalid_ca_path`, `invalid_header`), `request` (`invalid_path`), `response`
   (`body_too_large`, `content_encoding`, `invalid_utf8`, `invalid_json`),
-  `transport` (`connection_failed`,
-  `tls_validation`, `io_error`, `http_protocol`) and `timeout`
-  (`socket_timeout`, `deadline_exceeded`, both as `TransportTimeout`).
-  Translated exception messages are local and suppress the original displayed
-  exception chain, so no URL, header or server text enters those messages.
+  `transport` (`connection_failed`, `tls_validation`, `io_error`,
+  `http_protocol`) and `timeout` (`socket_timeout`, `deadline_exceeded`, both as
+  `TransportTimeout`). Translated exception messages are local and suppress the
+  original displayed exception chain, so no URL, header or server text enters
+  those messages.
 - `decode_json(body)` turns a UTF-8 JSON body into Python values and raises
   `response` errors `invalid_utf8` and `invalid_json` without the body text.
   An empty body is not a document: a product that answers a write without a
@@ -233,10 +238,12 @@ What it guarantees:
 
 What it does not do:
 
-- It does not check the application status, decode anything, authenticate
-  or paginate. Those are product semantics.
+- It does not encode requests, set authentication or product headers, decode the
+  body, check the HTTP or the application status, retry or paginate. Those are
+  product semantics; `decode_json` is a separate call for a product that speaks
+  JSON.
 - It does not keep connections open. Each request opens its own.
-- It does not make the budget a hard limit; see the next section.
+- It does not make the budget a hard limit; see [the limits](#budget-limits).
 
 
 ### Documentation fragment `foundata.utils.http_client`<a id="fragment-http"></a>
@@ -252,43 +259,53 @@ merged documentation against its real argument specification.
 ### `exec`<a id="exec"></a>
 
 `run_bounded(module, execution, profile=..., deadline=..., stdin=None, max_output_bytes=1 MiB, write=False)`
-executes one prepared command on a POSIX execution host. Import the module under
-another name, so that Python's built-in `exec` stays usable:
+executes one prepared command on a POSIX execution host and returns a
+`CommandResult` with `rc`, byte `stdout` and `stderr`, `deadline_expired` and
+`cleanup_triggered`. Import the module under another name, so that Python's
+built-in `exec` stays usable:
 `from ansible_collections.foundata.utils.plugins.module_utils import exec as exec_util`.
+
+What the product supplies:
+
+- An `Execution` carries argv, absolute working directory, host environment
+  additions, an effective-environment validator, host and application UIDs, and
+  a separate application identity command. The product validates executable
+  paths, identifiers, prefixes and option boundaries before preparing it.
+  `Execution` is a frozen dataclass; build a variant, such as the same locator
+  with another command, with `dataclasses.replace`.
+- Command argv must be non-secret and safe for framework debug logging. Pass
+  secrets on stdin; this helper logs neither stdin nor the captured streams.
+- Stdin is bytes or `None`; empty bytes are refused because core does not open a
+  pipe for them. With `None` the command inherits the module process's standard
+  input, which Ansible does not define. A command or wrapper that reads or holds
+  stdin, such as `podman exec --interactive`, needs bytes or must not get the
+  option. The identity probe always runs with `None`.
+- With `write=True`, `identity_argv` runs through the same container or wrapper
+  as the real command and prints the application's numeric UID.
+- GNU coreutils `timeout` must exist at the `TimeoutProfile.executable` absolute
+  path (default `/usr/bin/timeout`).
+- The product documents and enforces its policy for the environment the command
+  inherits, through the effective-environment validator. No environment is
+  silently removed.
 
 What it guarantees:
 
-- `Execution` carries argv, absolute working directory, host environment
-  additions, an effective-environment validator, host and application UIDs,
-  and a separate application identity command. Products validate executable
-  paths, identifiers, prefixes and option boundaries before preparing it.
-  `Execution` is a frozen dataclass; build a variant, such as the same
-  locator with another command, with `dataclasses.replace`.
 - `module.run_command` receives an argument list, `encoding=None`,
   `binary_data=True`, `check_rc=False`, `handle_exceptions=False`,
   `use_unsafe_shell=False` and `expand_user_and_vars=False`. Literal `$HOME`,
-  `${HOME}` and `~` stay literal. Stdin is bytes or `None`; empty bytes are
-  refused because core does not open a pipe for them. With `None` the
-  command inherits the module process's standard input, which Ansible does
-  not define. A command or wrapper that reads or holds stdin, such as
-  `podman exec --interactive`, needs bytes or must not get the option. The
-  identity probe always runs with `None`.
-- A synchronous selector supervisor writes stdin without blocking, reads
-  each stream under its own byte limit and checks the shared `Deadline`.
-  Both streams are checked before decoding, parsing or returning them.
-  `CommandResult` contains `rc`, byte `stdout` and `stderr`,
-  `deadline_expired` and `cleanup_triggered`. Streams and execution data
-  are omitted from repr; raw streams never become diagnostics or Ansible
-  results from this helper. Command argv must be non-secret and safe for
-  framework debug logging; stdin and captured streams are not logged by this
-  helper. Execution repr suppression is not a framework logging guarantee.
-- GNU coreutils `timeout` at the `TimeoutProfile.executable` absolute path
-  (default `/usr/bin/timeout`) is required. Its fallback duration is
-  `ceil(remaining) + 1`, never zero; the selector observes expiry directly.
-  Command exits 124, 137 and negative signal statuses alone are not expiry.
-  `kill_after` defaults to one second and is separate from the deadline.
-  TERM grace and each of at most two reap waits use that allowance; process
-  creation, scheduling and uninterruptible kernel work are not hard-bounded.
+  `${HOME}` and `~` stay literal.
+- A synchronous selector supervisor writes stdin without blocking, reads each
+  stream under its own byte limit and checks the shared `Deadline`. Both streams
+  are checked before decoding, parsing or returning them. Streams and execution
+  data are omitted from repr; raw streams never become diagnostics or Ansible
+  results from this helper. Execution repr suppression is not a framework
+  logging guarantee.
+- The selector observes expiry directly. GNU `timeout` is only a fallback at
+  `ceil(remaining) + 1` seconds, never zero. Command exits 124, 137 and negative
+  signal statuses alone are not expiry. `kill_after` defaults to one second and
+  is separate from the deadline. TERM grace and each of at most two reap waits
+  use that allowance; process creation, scheduling and uninterruptible kernel
+  work are not hard-bounded.
 - The supervisor sends TERM, then KILL when needed, to the wrapper's process
   group. It also cleans ordinary descendants after a parent exits. A
   cleanup intervention is a failure, even if the parent returned zero.
@@ -303,12 +320,10 @@ What it guarantees:
   a later one wins: `os.environ`, then `run_command_environ_update`, then
   `Execution.environment`; an addition can therefore blank an inherited
   variable. An invalid working directory or environment fails before starting
-  a command. No environment is silently
-  removed; the product must document and enforce its inherited policy.
+  a command.
 - With `write=True`, the runner compares the host effective UID and then
   executes `identity_argv` under the same deadline. Its bounded output must
-  equal the expected numeric application UID. The product must build this
-  probe through the same container or wrapper as the real command.
+  equal the expected numeric application UID.
 - Mechanical failures are `ApiError`: `CommandError` for execution, size,
   environment, identity or cleanup failures; `CommandTimeout`, also a
   `TransportTimeout`, for observed expiry. Errors from a supervised command
