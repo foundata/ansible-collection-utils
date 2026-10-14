@@ -305,6 +305,7 @@ class HttpClient:
             or path.startswith("//")
             or "#" in path
             or "\\" in path
+            or not path.isascii()
             or any(ord(char) < 0x21 or ord(char) == 0x7F for char in path)
         ):
             raise ApiError(

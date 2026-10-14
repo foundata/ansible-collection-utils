@@ -226,6 +226,8 @@ def test_invalid_body_limit_is_a_programming_error(limit: Any) -> None:
         "/a b",
         "/a\r\nX: y",
         "/a\x7f",
+        "/caf\u00e9",
+        "/a?q=\u00e9",
         None,
     ],
 )
