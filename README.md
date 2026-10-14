@@ -174,8 +174,9 @@ and returns an `HttpResponse` with `status`, `headers` under lower-cased names
 What it guarantees:
 
 - The request stays within the endpoint: the path must be absolute, without
-  dot segments, a fragment, a backslash, whitespace or control characters,
-  and the resulting URL must keep the endpoint's origin and path prefix. A
+  dot segments, a fragment, a backslash, whitespace, control or non-ASCII
+  characters (percent-encode them), and the resulting URL must keep the
+  endpoint's origin and path prefix. A
   base URL with credentials, a query or a fragment is refused, and so is a
   host that IDNA cannot encode, such as one with an empty label.
 - Certificates are validated by default; `ca_path` adds a private authority
@@ -610,9 +611,10 @@ except ApiError as error:
 ```
 
 The helper supplies these allowlisted failure fields. Ansible may add
-invocation metadata and a message-free call stack; devel may carry declared
-`no_log` values in its private controller protocol. Neither the handled
-exception text nor raw product responses are published by `fail_from`.
+invocation metadata and a message-free call stack; from ansible-core 2.22 on,
+the raw module result may also carry declared `no_log` values in a private
+field for the controller. Neither the handled exception text nor raw product
+responses are published by `fail_from`.
 
 ```json
 {
