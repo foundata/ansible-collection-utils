@@ -19,9 +19,16 @@ kills only the immediate child.
 If an admitted ansible-core changes that handoff so the supervisor can no
 longer own and clean up all three pipes first, keep the signature of
 :func:`run_bounded`, create the process with a direct ``Popen`` supervisor in
-this file, add the exact per-version ``ansible-bad-function`` sanity ignore
-with its reason and removal condition, and qualify handoff, pipe bounds,
-identity, environment and cleanup again. Never fall back to core's unbounded
+this file, and add the exact per-version ``ansible-bad-function`` sanity
+ignore with its reason and removal condition. The trigger is a core whose
+``run_command`` no longer calls the callback before it reads, writes or
+closes the pipes, as ``test_missing_completion_signal_is_refused``, the
+``exec`` integration target or the handoff probe shows. Requalify handoff,
+pipe bounds, identity, environment, error classification (``command_start``
+against ``command_io`` relies on ``Popen`` raising inside ``run_command``)
+and cleanup, and rerun each ``exec`` consumer's installed acceptance. Remove
+the ignore when an admitted core documents that callback ordering, or when
+the direct supervisor is the only path. Never fall back to core's unbounded
 communication. As long as no subprocess is created outside ``run_command``,
 no ignore is needed: the supervisor's ``os.killpg``, nonblocking ``os.read``
 and ``os.write`` and ``Popen`` wait and signal calls pass that sanity rule.
