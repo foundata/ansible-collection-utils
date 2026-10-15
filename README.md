@@ -51,6 +51,7 @@ newer where a module runs.
 - [Using the helpers in a product module](#usage)
 - [Dependencies](#dependencies)
 - [Development and testing](#development)
+- [Versioning and deprecation](#versioning-deprecation)
 - [Licensing, copyright](#licensing-copyright)
 - [Author information](#author-information)
 
@@ -652,6 +653,18 @@ command fixtures and qualify no product; each consumer's acceptance does that
 against its product. To report a problem or submit a change, see
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+
+
+## Versioning and deprecation<a id="versioning-deprecation"></a>
+
+This project follows [Semantic Versioning](https://semver.org/).
+Patch releases contain compatible fixes; minor releases may add compatible
+features or deprecations. Breaking changes, including changes to public
+defaults or removal of supported runtimes, require a major release.
+
+Deprecations are announced in the changelog and relevant documentation,
+with migration guidance and the planned removal version. Deprecated
+interfaces remain available until that major release.
 
 
 ## Licensing, copyright<a id="licensing-copyright"></a>
