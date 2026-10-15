@@ -31,7 +31,10 @@ options:
         description: "Declared profile for a local installation, container engine or qualified wrapper."
         type: str
         required: true
-        choices: ["package", "podman", "custom"]
+        choices:
+          - "package"
+          - "podman"
+          - "custom"
       user:
         description: "Expected module-process user on the execution host. Establish it with Ansible become."
         type: str
