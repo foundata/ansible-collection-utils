@@ -32,17 +32,23 @@ uv run noxfile.py                 # rewrite, then check
 CI=true uv run noxfile.py         # check only; fails on anything a rewrite would change
 uv run noxfile.py -l              # list all sessions
 uv run noxfile.py -s lint         # Python, plugin YAML and typed unit tests
+uv run noxfile.py -s helper-lint   # Python helpers
 uv run noxfile.py -s ansible-test-sanity
 uv run noxfile.py -s ansible-test-units
 uv run noxfile.py -s ansible-test-integration
 ```
+
+`helper-lint` covers Python in `extensions/molecule/`, `roles/*/files/`,
+`tools/` and `scripts/`, using [ruff.toml](ruff.toml).
+It runs by default; add it to CI configurations that list sessions explicitly.
 
 With nox installed, `nox` replaces `uv run noxfile.py`, for example
 `nox -s lint`. A plain run applies the project's own rewrites before checking:
 `ansible-lint --fix`, Python and Markdown formatting. With `CI=true` every
 session only checks. The default sessions verify the foundata lint rules and
 validate both changelog fragments and the generated `changelogs/changelog.yaml`
-separately. Arguments after `--` go to the session's tool unchanged.
+separately. Except for `helper-lint`, arguments after `--` go to the session's
+tool unchanged.
 `noxfile.py` documents each session; the built-in sessions are configured in
 `antsibull-nox.toml`.
 
