@@ -163,6 +163,16 @@ admitted ansible-core and Python pair.
 
 ## Releases<a id="releases"></a>
 
+Releases require `releasing>=7.0.0` for the `release` command. Install the
+development requirement in the maintainer's Python environment:
+
+```sh
+python -m pip install -r requirements-dev.txt
+```
+
+`release build` runs the committed revision's Ansible sanity tests before
+building the archive.
+
 A release of this collection consists of:
 
 - one Semantic Versioning `X.Y.Z` version in [`galaxy.yml`](./galaxy.yml)
