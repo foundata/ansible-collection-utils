@@ -13,7 +13,9 @@
 
 - name: "Record the qualified timeout implementation"
   ansible.builtin.command:
-    argv: ["{{ __exec_timeout_path }}", "--version"]
+    argv:
+      - "{{ __exec_timeout_path }}"
+      - "--version"
   changed_when:
     - false
   register: __exec_timeout
@@ -32,7 +34,12 @@
       kind: "package"
       user: "root"
       target_user: "root"
-  loop: ["roundtrip", "literal", "environment", "status", "write"]
+  loop:
+    - "roundtrip"
+    - "literal"
+    - "environment"
+    - "status"
+    - "write"
   register: __exec_success
 
 - name: "Verify successful contracts and secret exclusion"
