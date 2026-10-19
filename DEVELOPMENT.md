@@ -89,7 +89,8 @@ coreutils. None of these tests qualifies a product.
 
 This collection was rendered from the `collection_default` variant of
 [foundata's Ansible skeletons](https://foundata.com/en/projects/ansible-skeletons/)
-and follows the check tooling of the `collection_modules_grid` variant.
+and follows the check tooling of the `collection_modules_appliance` variant,
+which replaced `collection_modules_grid`.
 Licensing, the changelog configuration, `tests/config.yml`, `.ansible-lint`,
 `.yamllint` and `noxfile.py` come from the skeleton, and skeleton changes reach
 them as backports. A plugin-only collection differs from the render:
