@@ -85,11 +85,6 @@ beside a control that shows the leak without `exception=None`. The integration
 targets drive test-only consumer modules through real tasks; `exec` needs GNU
 coreutils. None of these tests qualifies a product.
 
-If `docs-check` fails with `AF_UNIX path too long` under Python 3.14, run nox
-with Python 3.13 (`uv run --python 3.13 noxfile.py`) or from a shorter checkout
-path: antsibull-docs starts worker processes whose socket path includes the
-checkout.
-
 ## Boundaries<a id="boundaries"></a>
 
 This collection was rendered from the `collection_default` variant of
