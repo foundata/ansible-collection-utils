@@ -185,7 +185,8 @@ python -m pip install -r requirements-dev.txt
 ```
 
 `release build` runs the committed revision's Ansible sanity tests before
-building the archive.
+building the archive. Set `repository` in `.releasing.toml` before the first
+release.
 
 A release of this collection consists of:
 
