@@ -25,50 +25,58 @@ This utility collection has no product endpoint or Molecule scenario.
 
 ## Checks<a id="checks"></a>
 
-`runtime-check` runs by default. It installs a built archive in isolation and
-retains only `meta/`, `plugins/`, `roles/` and `playbooks/`. It checks Python
-imports, module documentation and role loading/syntax, then runs available
-unit tests from a separate fixture directory against that installation.
-Role deployment behavior remains covered by Molecule.
-
-To check the exact archive retained for a release:
-
-```sh
-uv run noxfile.py -s runtime-check -- --artifact /path/to/collection.tar.gz
-```
-
-Run every check from the collection root, inside its Git repository:
+Run the checks from the collection's Git root. With nox installed, `nox`
+replaces `uv run noxfile.py`.
 
 ```bash
-uv run noxfile.py                 # rewrite, then check
-CI=true uv run noxfile.py         # check only; fails on anything a rewrite would change
-uv run noxfile.py -l              # list all sessions
+uv run noxfile.py                 # fix, then run default checks
+CI=true uv run noxfile.py         # check only
+uv run noxfile.py -l              # list sessions
 uv run noxfile.py -s lint         # Python, plugin YAML and typed unit tests
-uv run noxfile.py -s helper-lint   # Python helpers
+uv run noxfile.py -s helper-lint  # Python helpers
 uv run noxfile.py -s ansible-test-sanity
 uv run noxfile.py -s ansible-test-units
 uv run noxfile.py -s ansible-test-integration
 ```
 
-`helper-lint` covers Python in `extensions/molecule/`, `roles/*/files/`,
-`tools/`, `scripts/` and `tests/runtime_check.py`, using [ruff.toml](ruff.toml).
-It runs by default; add it to CI configurations that list sessions explicitly.
+Among the default sessions:
 
-With nox installed, `nox` replaces `uv run noxfile.py`, for example
-`nox -s lint`. A plain run applies the project's own rewrites before checking:
+- `runtime-check` installs the built collection in isolation and keeps only
+  what ships: `meta/`, `plugins/`, `roles/` and `playbooks/`. It checks Python
+  imports, module documentation, and role loading and syntax, then runs the
+  unit tests against that installation. Molecule covers how the roles deploy.
+  To check the exact archive of a release:
+
+  ```sh
+  uv run noxfile.py -s runtime-check -- --artifact /path/to/collection.tar.gz
+  ```
+
+- `ansible-lint` runs with foundata's rules from `ansible-lint-foundata`,
+  after checking that the rules the configuration enables are active. With
+  `nox --no-venv` and the extension missing, it warns and runs only the stock
+  rules.
+- `helper-lint` checks the Python outside `plugins/` with
+  [ruff.toml](ruff.toml): `extensions/molecule/`, the roles' `files/`,
+  `tools/`, `scripts/` and `tests/runtime_check.py`. Add it to CI
+  configurations that list sessions explicitly.
+
+A plain run applies the project's own rewrites before checking:
 `ansible-lint --fix`, Python and Markdown formatting. With `CI=true` every
-session only checks. The default sessions verify the foundata lint rules and
-validate both changelog fragments and the generated `changelogs/changelog.yaml`
-separately. Except for `helper-lint`, arguments after `--` go to the session's
-tool unchanged.
-`noxfile.py` documents each session; the built-in sessions are configured in
-`antsibull-nox.toml`.
+session only checks. The default sessions also validate the changelog fragments
+and the generated `changelogs/changelog.yaml`, each on its own. Except for
+`helper-lint`, arguments after `--` go to the session's tool unchanged.
+
+Session definitions: [noxfile.py](noxfile.py).
+Built-in session settings: [antsibull-nox.toml](antsibull-nox.toml).
+Run one nox chain at a time per container store. While editing, run the
+sessions of one ansible-core release, such as
+`uv run noxfile.py -s ansible-test-sanity-2.21` (`-l` lists them), and the
+default sessions before a commit.
 
 Select the `ansible-test-*` meta sessions by name. Tags select nothing:
 antsibull-nox registers them for its CI matrix generator only. `-l` also lists
 the single lanes; run one by its name, for example
-`uv run noxfile.py -s ansible-test-units-2.21-3.14`. Run one nox chain at a time
-per container store.
+`uv run noxfile.py -s ansible-test-units-2.21-3.14`.
 
 Set `max_version` in the ansible-test session configuration to omit an
 unreleased series; otherwise its lane installs the GitHub stable branch before a
