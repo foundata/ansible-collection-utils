@@ -44,8 +44,8 @@ Among the default sessions:
 - `runtime-check` installs the built collection in isolation and keeps only
   what ships: `meta/`, `plugins/`, `roles/` and `playbooks/`. It checks Python
   imports, module documentation, and role loading and syntax, then runs the
-  unit tests against that installation. Molecule covers how the roles deploy.
-  To check the exact archive of a release:
+  unit tests against that installation. To check the exact archive of a
+  release:
 
   ```sh
   uv run noxfile.py -s runtime-check -- --artifact /path/to/collection.tar.gz
