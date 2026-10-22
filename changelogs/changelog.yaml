@@ -1,6 +1,18 @@
 ---
 ancestor: null
 releases:
+  1.0.1:
+    changes:
+      bugfixes:
+        - 'http_client - ``HttpClient.request()`` and ``decode_json()`` now annotate
+          their ``body`` as ``bytes | bytearray``. Both already accepted a bytearray
+          at run time, so a product can pass a large request body without a copy and
+          without a cast for its type checker.
+
+          '
+    fragments:
+      - http-client-bytearray-body.yml
+    release_date: '2026-10-22'
   1.0.0:
     changes:
       release_summary: 'First release of ``foundata.utils``, the shared module utilities
