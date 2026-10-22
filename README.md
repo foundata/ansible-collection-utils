@@ -170,7 +170,8 @@ A bounded byte transport over `ansible.module_utils.urls.open_url`.
 is configured once per endpoint.
 `request(method, path, deadline=..., headers=..., body=None)` sends one request
 and returns an `HttpResponse` with `status`, `headers` under lower-cased names
-(a repeated header is joined with a comma) and the raw `body` bytes.
+(a repeated header is joined with a comma) and the raw `body` bytes. A request
+`body` is `bytes` or a `bytearray`; a bytearray is sent without a copy.
 
 What it guarantees:
 

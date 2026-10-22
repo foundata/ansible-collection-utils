@@ -422,6 +422,23 @@ def test_open_url_receives_the_safety_settings(
     assert 0 < call["timeout"] <= 7
 
 
+def test_a_bytearray_body_is_sent_without_a_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[Any] = []
+
+    def fake_open_url(url: str, **kwargs: Any) -> FakeResponse:
+        sent.append(kwargs["data"])
+        return FakeResponse(200, b"")
+
+    monkeypatch.setattr(http_module, "open_url", fake_open_url)
+    body = bytearray(b"package bytes")
+    HttpClient("https://host", user_agent=AGENT).request(
+        "PUT", "/", deadline=Deadline(5), headers=NO_HEADERS, body=body
+    )
+    assert len(sent) == 1 and sent[0] is body
+
+
 def test_socket_timeout_is_the_smaller_of_timeout_and_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1035,7 +1052,9 @@ def test_validate_certs_false_accepts_the_certificate(
         (bytearray(b'"\\u00e4"'), "\u00e4"),
     ],
 )
-def test_decode_json_returns_the_document(body: bytes, expected: Any) -> None:
+def test_decode_json_returns_the_document(
+    body: bytes | bytearray, expected: Any
+) -> None:
     assert decode_json(body) == expected
 
 

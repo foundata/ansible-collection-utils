@@ -189,14 +189,15 @@ class HttpClient:
         *,
         deadline: Deadline,
         headers: Mapping[str, str],
-        body: bytes | None = None,
+        body: bytes | bytearray | None = None,
     ) -> HttpResponse:
         """Send one request and return its bounded response.
 
         ``path`` is appended to the base URL and may carry a query string.
         ``headers`` carries the product's authentication and content headers;
-        names in :data:`RESERVED_HEADERS` are refused. The returned response
-        may carry any HTTP status.
+        names in :data:`RESERVED_HEADERS` are refused. A ``bytearray`` body is
+        sent as is, without a copy. The returned response may carry any HTTP
+        status.
 
         Raises:
             ApiError: With category ``argument`` and code ``invalid_header``
@@ -210,12 +211,12 @@ class HttpClient:
                 exhausted before or after a read.
             ValueError: When ``method`` or a header name is invalid or
                 reserved; these come from the product's code.
-            TypeError: When ``body`` is neither bytes nor ``None``.
+            TypeError: When ``body`` is neither bytes, a bytearray nor ``None``.
         """
         if method not in HTTP_METHODS:
             raise ValueError(f"Unsupported HTTP method {method!r}")
         if body is not None and not isinstance(body, (bytes, bytearray)):
-            raise TypeError("body must be bytes or None")
+            raise TypeError("body must be bytes, a bytearray or None")
         request_headers = _checked_headers(headers)
         request_headers["Accept-Encoding"] = "identity"
         url = self._url_for(path)
@@ -405,7 +406,7 @@ class HttpClient:
         return b"".join(chunks)
 
 
-def decode_json(body: bytes) -> Any:
+def decode_json(body: bytes | bytearray) -> Any:
     """Decode a JSON response body, or raise a local ``response`` error.
 
     The transport otherwise stays bytes only; this decoder exists because
@@ -420,10 +421,10 @@ def decode_json(body: bytes) -> Any:
         ApiError: With category ``response`` and code ``invalid_utf8`` when
             the bytes are not UTF-8, or ``invalid_json`` when the text is not
             a JSON document. Neither message carries the body.
-        TypeError: When ``body`` is not bytes.
+        TypeError: When ``body`` is neither bytes nor a bytearray.
     """
     if not isinstance(body, (bytes, bytearray)):
-        raise TypeError("body must be bytes")
+        raise TypeError("body must be bytes or a bytearray")
     try:
         text = bytes(body).decode("utf-8")
     except UnicodeDecodeError:
